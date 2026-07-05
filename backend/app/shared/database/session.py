@@ -1,16 +1,30 @@
+from pathlib import Path
+import os
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from backend.app.shared.database.base import Base
 
-DATABASE_URL = "sqlite+pysqlite:///:memory:"
+_DEFAULT_DB_PATH = Path(__file__).resolve().parents[4] / "runtime" / "device_intelligence.sqlite3"
 
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
+
+def _database_url() -> str:
+    default_path = _DEFAULT_DB_PATH.resolve().as_posix()
+    return os.getenv("NOVARIS_DATABASE_URL", f"sqlite+pysqlite:///{default_path}")
+
+
+def _create_engine():
+    database_url = _database_url()
+    if database_url.startswith("sqlite"):
+        return create_engine(
+            database_url,
+            connect_args={"check_same_thread": False},
+        )
+    return create_engine(database_url)
+
+
+engine = _create_engine()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -18,5 +32,6 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 def init_db() -> None:
     from backend.app.modules.device_intelligence import models  # noqa: F401
 
+    if engine.url.drivername.startswith("sqlite"):
+        Path(engine.url.database).parent.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
-

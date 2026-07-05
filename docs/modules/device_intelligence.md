@@ -103,7 +103,38 @@ Le score final est borné à `0..100`.
 - Pas de vrai SDK mobile intégré.
 - Pas de modèle ML entraîné.
 - Pas de corrélation réseau avancée.
-- Les sessions de persistance sont volontairement simples pour ce sprint.
+- La persistance de développement repose sur SQLite.
+
+## Persistance durable de l'historique appareil
+
+L'historique des appareils est nécessaire pour comparer un nouvel événement à un comportement passé stable. Sans historique durable, le module ne peut pas détecter correctement un appareil déjà connu après redémarrage.
+
+Ce qui est stocké:
+
+- identifiant utilisateur et appareil;
+- hash appareil;
+- marque, modèle, OS, version OS;
+- IP, pays, ville;
+- statut de confiance;
+- timestamps de première détection, dernière utilisation, création et mise à jour.
+
+Ce qui n'est pas stocké:
+
+- IMEI;
+- numéro de série matériel;
+- données biométriques;
+- données non nécessaires au scoring.
+
+Limite actuelle:
+
+- SQLite est suffisant pour la V1 dev et les tests locaux.
+- `Base.metadata.create_all()` est acceptable à ce stade pour initialiser les tables.
+
+Évolution future:
+
+- migration vers PostgreSQL;
+- adoption d'Alembic pour les migrations versionnées;
+- séparation claire entre bootstrap V1 et schéma de production.
 
 ## 11. Évolutions futures Android/iOS
 
@@ -119,4 +150,3 @@ Le score final est borné à `0..100`.
 - Réduire les données brutes envoyées au backend.
 - Hasher les attributs device sensibles côté SDK.
 - L'IP et le pays peuvent aussi être déterminés côté backend à partir de la requête.
-

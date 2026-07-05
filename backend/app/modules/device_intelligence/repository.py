@@ -41,6 +41,7 @@ def _upsert_device(
             first_seen_at=_utcnow(),
             last_used_at=_utcnow(),
             created_at=_utcnow(),
+            updated_at=_utcnow(),
         )
         db.add(record)
     else:
@@ -54,6 +55,7 @@ def _upsert_device(
         record.city = device.city
         record.status = status
         record.last_used_at = _utcnow()
+        record.updated_at = _utcnow()
     db.commit()
     db.refresh(record)
     return record
@@ -90,6 +92,7 @@ def update_last_used(db: Session, user_id: str, device_id: str) -> UserDeviceFin
     if record is None:
         return None
     record.last_used_at = _utcnow()
+    record.updated_at = _utcnow()
     db.commit()
     db.refresh(record)
     return record
@@ -109,4 +112,3 @@ def mark_device_blocked(
     device_hash: str,
 ) -> UserDeviceFingerprint:
     return _upsert_device(db, device, device_hash, DeviceStatus.BLOCKED.value)
-

@@ -1,26 +1,25 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.api.dependencies import get_db
 from backend.app.main import app
-from backend.app.modules.device_intelligence.models import Base
+from backend.app.modules.device_intelligence.models import Base, UserDeviceFingerprint
 from backend.app.modules.device_intelligence.rules import evaluate_device_risk
-from backend.app.shared.database.session import SessionLocal
 
 
 @pytest.fixture()
-def client():
+def client(tmp_path: Path):
+    database_path = tmp_path / "device_intelligence_test.sqlite3"
     engine = create_engine(
-        "sqlite+pysqlite://",
+        f"sqlite+pysqlite:///{database_path}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
@@ -60,6 +59,10 @@ def _payload(**overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def test_normal_device_allows_pin():
@@ -161,6 +164,130 @@ def test_enroll_endpoint_works(client):
     assert body["status"] == "ENROLLED"
     assert body["user_id"] == "user-001"
     assert body["device_id"] == "device-001"
+
+
+def test_enroll_persists_device_in_database(client, tmp_path: Path):
+    response = client.post(
+        "/api/v1/device-intelligence/enroll",
+        json={
+            "user_id": "user-db",
+            "device": _payload(user_id="user-db", device_id="device-db"),
+        },
+    )
+    assert response.status_code == 200
+
+    database_path = tmp_path / "device_intelligence_test.sqlite3"
+    engine = create_engine(
+        f"sqlite+pysqlite:///{database_path}",
+        connect_args={"check_same_thread": False},
+    )
+    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    with Session() as db:
+        record = db.scalar(
+            select(UserDeviceFingerprint).where(
+                UserDeviceFingerprint.user_id == "user-db",
+                UserDeviceFingerprint.device_id == "device-db",
+            )
+        )
+        assert record is not None
+        assert record.status == "TRUSTED"
+
+
+def test_list_devices_returns_enrolled_device(client):
+    client.post(
+        "/api/v1/device-intelligence/enroll",
+        json={
+            "user_id": "user-list",
+            "device": _payload(user_id="user-list", device_id="device-list"),
+        },
+    )
+
+    response = client.get("/api/v1/device-intelligence/users/user-list/devices")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["device_id"] == "device-list"
+
+
+def test_analyze_uses_persisted_history(client):
+    client.post(
+        "/api/v1/device-intelligence/enroll",
+        json={
+            "user_id": "user-history",
+            "device": _payload(user_id="user-history", device_id="device-history"),
+        },
+    )
+
+    response = client.post(
+        "/api/v1/device-intelligence/analyze",
+        json=_payload(user_id="user-history", device_id="device-history"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision"] == "ALLOW_PIN"
+    assert body["evidence"]["history"]["device_id"] == "device-history"
+
+
+def test_persistence_survives_new_sqlalchemy_session(tmp_path: Path):
+    database_path = tmp_path / "device_intelligence_test.sqlite3"
+    engine = create_engine(
+        f"sqlite+pysqlite:///{database_path}",
+        connect_args={"check_same_thread": False},
+    )
+    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+    with Session() as db:
+        db.add(
+            UserDeviceFingerprint(
+                user_id="user-persist",
+                device_id="device-persist",
+                device_hash="hash",
+                brand="Samsung",
+                model="Galaxy S23",
+                os_name="Android",
+                os_version="14",
+                ip_address="196.0.0.1",
+                country="CI",
+                city="Abidjan",
+                status="TRUSTED",
+                first_seen_at=_utcnow(),
+                last_used_at=_utcnow(),
+                created_at=_utcnow(),
+                updated_at=_utcnow(),
+            )
+        )
+        db.commit()
+
+    engine.dispose()
+    engine2 = create_engine(
+        f"sqlite+pysqlite:///{database_path}",
+        connect_args={"check_same_thread": False},
+    )
+    Session2 = sessionmaker(autocommit=False, autoflush=False, bind=engine2)
+    with Session2() as db:
+        record = db.scalar(
+            select(UserDeviceFingerprint).where(
+                UserDeviceFingerprint.user_id == "user-persist",
+                UserDeviceFingerprint.device_id == "device-persist",
+            )
+        )
+        assert record is not None
+
+
+def test_duplicate_enroll_does_not_create_second_record(client):
+    payload = {
+        "user_id": "user-dup",
+        "device": _payload(user_id="user-dup", device_id="device-dup"),
+    }
+    first = client.post("/api/v1/device-intelligence/enroll", json=payload)
+    second = client.post("/api/v1/device-intelligence/enroll", json=payload)
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    response = client.get("/api/v1/device-intelligence/users/user-dup/devices")
+    assert response.status_code == 200
+    assert len(response.json()) == 1
 
 
 def test_score_is_always_bounded():
