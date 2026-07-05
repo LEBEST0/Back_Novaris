@@ -182,6 +182,7 @@ def test_analyze_endpoint_returns_all_fields(client):
         "user_id",
         "device_id",
         "score",
+        "confidence_score",
         "risk_level",
         "decision",
         "reasons",
@@ -359,6 +360,7 @@ def test_valid_analyze_request_is_accepted(client):
     response = _signed_post(client, "/api/v1/device-intelligence/analyze", _analyze_payload())
     assert response.status_code == 200
     assert response.json()["decision"] == "ALLOW_PIN"
+    assert response.json()["confidence_score"] == 100
 
 
 def test_payload_v1_is_accepted(client):
@@ -405,6 +407,7 @@ def test_api_contract_is_conserved(client):
         "user_id",
         "device_id",
         "score",
+        "confidence_score",
         "risk_level",
         "decision",
         "reasons",
@@ -486,3 +489,13 @@ def test_invalid_signature_is_rejected(client):
         content=body,
     )
     assert response.status_code == 403
+
+
+def test_confidence_score_is_bounded(client):
+    response = _signed_post(client, "/api/v1/device-intelligence/analyze", _analyze_payload())
+    assert 0 <= response.json()["confidence_score"] <= 100
+
+
+def test_complete_valid_request_gets_full_confidence(client):
+    response = _signed_post(client, "/api/v1/device-intelligence/analyze", _analyze_payload())
+    assert response.json()["confidence_score"] == 100

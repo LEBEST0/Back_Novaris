@@ -117,3 +117,12 @@ Payload endpoints also require `X-Novaris-Signature`.
 - This protects the payload against in-transit JSON tampering.
 
 The mechanism is still lightweight and will later be replaced by Play Integrity / App Attest backed signing.
+
+## Difference between risk_score and confidence_score
+
+- `risk_score` measures device risk.
+- `confidence_score` measures trust in the SDK request itself.
+
+They are separate signals and must not be merged.
+
+For accepted requests, `confidence_score` is `100` because the client key, signature, timestamp, nonce, and payload contract all passed validation.

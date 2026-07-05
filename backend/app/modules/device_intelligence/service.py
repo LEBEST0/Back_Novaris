@@ -101,6 +101,7 @@ class DeviceIntelligenceService:
             user_id=payload.user_id,
             device_id=payload.device_id,
             score=evaluation["score"],
+            confidence_score=100,
             risk_level=evaluation["risk_level"],
             decision=evaluation["decision"],
             reasons=evaluation["reasons"],

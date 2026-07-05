@@ -243,3 +243,15 @@ Payload endpoints also require `X-Novaris-Signature`.
 - This protects the payload against tampering between the device and the backend.
 
 The signature is intentionally lightweight for now. It will later be replaced by Play Integrity on Android and App Attest on iOS with a stronger attestation-based signing flow.
+
+## 16. Difference between risk_score and confidence_score
+
+- `risk_score` measures how risky the device appears based on behavior and device signals.
+- `confidence_score` measures how trustworthy the incoming SDK request is.
+
+They are independent:
+
+- a low `risk_score` does not imply a low `confidence_score`;
+- a high `confidence_score` does not make the device safe by itself.
+
+In the current flow, accepted requests return `confidence_score = 100` because all trust checks have passed.

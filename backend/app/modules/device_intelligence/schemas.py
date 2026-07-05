@@ -55,6 +55,7 @@ class DeviceRiskResponse(BaseModel):
     user_id: str
     device_id: str
     score: int = Field(ge=0, le=100)
+    confidence_score: int = Field(ge=0, le=100)
     risk_level: str
     decision: str
     reasons: list[str]
