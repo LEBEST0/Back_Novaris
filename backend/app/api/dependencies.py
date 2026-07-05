@@ -3,7 +3,7 @@ from collections.abc import Generator
 from fastapi import Header, HTTPException, status
 from sqlalchemy.orm import Session
 
-from backend.app.shared.config import get_device_client_key
+from backend.app.shared.config.settings import get_device_client_key
 from backend.app.shared.database.session import SessionLocal
 
 

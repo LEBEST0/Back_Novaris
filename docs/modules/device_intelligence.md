@@ -230,3 +230,5 @@ Validation rules:
 - unsupported payload versions are rejected with a validation error.
 
 The client key is a lightweight guard for now. It is not a cryptographic signature. It will later be replaced by a real SDK signature and attestation flow using Play Integrity on Android and App Attest on iOS.
+
+Configuration is now organized under `backend/app/shared/config/` with `settings.py` and `constants.py`.

@@ -105,3 +105,4 @@ Validation rules:
 
 This client key is a temporary lightweight guard. It is not a cryptographic signature and it can be replaced later by a real SDK signature plus Play Integrity / App Attest.
 
+Configuration now lives under `backend/app/shared/config/` with `settings.py` and `constants.py`.
