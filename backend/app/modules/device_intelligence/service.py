@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -56,10 +55,6 @@ class DeviceIntelligenceService:
         )
 
     @staticmethod
-    def _expected_client_key() -> str:
-        return os.getenv("NOVARIS_DEVICE_CLIENT_KEY", "novaris-device-client-key")
-
-    @staticmethod
     def _validate_timestamp(timestamp: datetime) -> None:
         now = datetime.now(timezone.utc)
         current = timestamp if timestamp.tzinfo else timestamp.replace(tzinfo=timezone.utc)
@@ -70,15 +65,7 @@ class DeviceIntelligenceService:
                 detail="timestamp outside allowed 5 minute window",
             )
 
-    def _validate_client_key(self, client_key: str | None) -> None:
-        if not client_key or client_key != self._expected_client_key():
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="invalid or missing X-Novaris-Client-Key",
-            )
-
-    def analyze(self, payload: DeviceAnalyzeRequest, client_key: str | None) -> DeviceRiskResponse:
-        self._validate_client_key(client_key)
+    def analyze(self, payload: DeviceAnalyzeRequest) -> DeviceRiskResponse:
         self._validate_timestamp(payload.timestamp)
 
         if not repository.register_request_nonce(self.db, payload):

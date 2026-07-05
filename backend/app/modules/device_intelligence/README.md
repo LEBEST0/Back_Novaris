@@ -33,13 +33,17 @@ Not stored:
 
 ## Security layer V3
 
-The `analyze` payload now includes:
+All device intelligence endpoints now require `X-Novaris-Client-Key`:
+
+- `POST /enroll`
+- `POST /analyze`
+- `GET /users/{user_id}/devices`
+
+The `analyze` payload also includes:
 
 - `request_id`
 - `timestamp`
 - `nonce`
-
-The request must also include `X-Novaris-Client-Key`.
 
 Validation rules:
 
@@ -47,5 +51,4 @@ Validation rules:
 - nonce reuse is rejected;
 - missing or invalid client key is rejected.
 
-This client key is a temporary lightweight guard. It will later be replaced by a real SDK signature and attestation flow.
-
+This client key is a temporary lightweight guard. It is not a cryptographic signature and it can be replaced later by a real SDK signature plus Play Integrity / App Attest.

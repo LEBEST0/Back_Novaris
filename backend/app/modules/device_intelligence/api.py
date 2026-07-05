@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from backend.app.api.dependencies import get_db
+from backend.app.api.dependencies import get_db, require_device_client_key
 from backend.app.modules.device_intelligence.schemas import (
     DeviceAnalyzeRequest,
     DeviceEnrollRequest,
@@ -14,7 +14,11 @@ router = APIRouter(prefix="/device-intelligence", tags=["device-intelligence"])
 
 
 @router.post("/enroll")
-def enroll_device(payload: DeviceEnrollRequest, db: Session = Depends(get_db)):
+def enroll_device(
+    payload: DeviceEnrollRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_device_client_key),
+):
     service = DeviceIntelligenceService(db)
     return service.enroll(payload)
 
@@ -23,13 +27,17 @@ def enroll_device(payload: DeviceEnrollRequest, db: Session = Depends(get_db)):
 def analyze_device(
     payload: DeviceAnalyzeRequest,
     db: Session = Depends(get_db),
-    x_novaris_client_key: str | None = Header(default=None, alias="X-Novaris-Client-Key"),
+    _: None = Depends(require_device_client_key),
 ) -> DeviceRiskResponse:
     service = DeviceIntelligenceService(db)
-    return service.analyze(payload, x_novaris_client_key)
+    return service.analyze(payload)
 
 
 @router.get("/users/{user_id}/devices")
-def list_user_devices(user_id: str, db: Session = Depends(get_db)):
+def list_user_devices(
+    user_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_device_client_key),
+):
     service = DeviceIntelligenceService(db)
     return service.list_devices(user_id)

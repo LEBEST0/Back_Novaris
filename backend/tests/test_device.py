@@ -74,6 +74,10 @@ def _analyze_payload(**overrides):
     return payload
 
 
+def _client_headers() -> dict[str, str]:
+    return {"X-Novaris-Client-Key": "test-client-key"}
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -150,7 +154,7 @@ def test_vpn_and_country_change_raise_risk():
 def test_analyze_endpoint_returns_all_fields(client):
     response = client.post(
         "/api/v1/device-intelligence/analyze",
-        headers={"X-Novaris-Client-Key": "test-client-key"},
+        headers=_client_headers(),
         json=_analyze_payload(),
     )
     assert response.status_code == 200
@@ -171,6 +175,7 @@ def test_analyze_endpoint_returns_all_fields(client):
 def test_enroll_endpoint_works(client):
     response = client.post(
         "/api/v1/device-intelligence/enroll",
+        headers=_client_headers(),
         json={
             "user_id": "user-001",
             "device": _payload(),
@@ -186,6 +191,7 @@ def test_enroll_endpoint_works(client):
 def test_enroll_persists_device_in_database(client, tmp_path: Path):
     response = client.post(
         "/api/v1/device-intelligence/enroll",
+        headers=_client_headers(),
         json={
             "user_id": "user-db",
             "device": _payload(user_id="user-db", device_id="device-db"),
@@ -213,13 +219,17 @@ def test_enroll_persists_device_in_database(client, tmp_path: Path):
 def test_list_devices_returns_enrolled_device(client):
     client.post(
         "/api/v1/device-intelligence/enroll",
+        headers=_client_headers(),
         json={
             "user_id": "user-list",
             "device": _payload(user_id="user-list", device_id="device-list"),
         },
     )
 
-    response = client.get("/api/v1/device-intelligence/users/user-list/devices")
+    response = client.get(
+        "/api/v1/device-intelligence/users/user-list/devices",
+        headers=_client_headers(),
+    )
     assert response.status_code == 200
     body = response.json()
     assert len(body) == 1
@@ -229,6 +239,7 @@ def test_list_devices_returns_enrolled_device(client):
 def test_analyze_uses_persisted_history(client):
     client.post(
         "/api/v1/device-intelligence/enroll",
+        headers=_client_headers(),
         json={
             "user_id": "user-history",
             "device": _payload(user_id="user-history", device_id="device-history"),
@@ -237,7 +248,7 @@ def test_analyze_uses_persisted_history(client):
 
     response = client.post(
         "/api/v1/device-intelligence/analyze",
-        headers={"X-Novaris-Client-Key": "test-client-key"},
+        headers=_client_headers(),
         json=_analyze_payload(user_id="user-history", device_id="device-history"),
     )
     assert response.status_code == 200
@@ -298,12 +309,12 @@ def test_duplicate_enroll_does_not_create_second_record(client):
         "user_id": "user-dup",
         "device": _payload(user_id="user-dup", device_id="device-dup"),
     }
-    first = client.post("/api/v1/device-intelligence/enroll", json=payload)
-    second = client.post("/api/v1/device-intelligence/enroll", json=payload)
+    first = client.post("/api/v1/device-intelligence/enroll", headers=_client_headers(), json=payload)
+    second = client.post("/api/v1/device-intelligence/enroll", headers=_client_headers(), json=payload)
     assert first.status_code == 200
     assert second.status_code == 200
 
-    response = client.get("/api/v1/device-intelligence/users/user-dup/devices")
+    response = client.get("/api/v1/device-intelligence/users/user-dup/devices", headers=_client_headers())
     assert response.status_code == 200
     assert len(response.json()) == 1
 
@@ -329,7 +340,7 @@ def test_score_is_always_bounded():
 def test_valid_analyze_request_is_accepted(client):
     response = client.post(
         "/api/v1/device-intelligence/analyze",
-        headers={"X-Novaris-Client-Key": "test-client-key"},
+        headers=_client_headers(),
         json=_analyze_payload(),
     )
     assert response.status_code == 200
@@ -341,7 +352,7 @@ def test_expired_timestamp_is_rejected(client):
     payload["timestamp"] = (datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat()
     response = client.post(
         "/api/v1/device-intelligence/analyze",
-        headers={"X-Novaris-Client-Key": "test-client-key"},
+        headers=_client_headers(),
         json=payload,
     )
     assert response.status_code == 400
@@ -351,12 +362,12 @@ def test_nonce_reuse_is_rejected(client):
     payload = _analyze_payload(user_id="user-nonce", device_id="device-nonce")
     first = client.post(
         "/api/v1/device-intelligence/analyze",
-        headers={"X-Novaris-Client-Key": "test-client-key"},
+        headers=_client_headers(),
         json=payload,
     )
     second = client.post(
         "/api/v1/device-intelligence/analyze",
-        headers={"X-Novaris-Client-Key": "test-client-key"},
+        headers=_client_headers(),
         json=payload,
     )
     assert first.status_code == 200
@@ -374,7 +385,7 @@ def test_missing_client_key_is_rejected(client):
 def test_api_contract_is_conserved(client):
     response = client.post(
         "/api/v1/device-intelligence/analyze",
-        headers={"X-Novaris-Client-Key": "test-client-key"},
+        headers=_client_headers(),
         json=_analyze_payload(),
     )
     assert set(response.json().keys()) == {
@@ -388,3 +399,47 @@ def test_api_contract_is_conserved(client):
         "evidence",
         "adapter_mode",
     }
+
+
+def test_enroll_without_key_is_rejected(client):
+    response = client.post(
+        "/api/v1/device-intelligence/enroll",
+        json={
+            "user_id": "user-no-key",
+            "device": _payload(user_id="user-no-key", device_id="device-no-key"),
+        },
+    )
+    assert response.status_code == 403
+
+
+def test_enroll_with_key_is_accepted(client):
+    response = client.post(
+        "/api/v1/device-intelligence/enroll",
+        headers=_client_headers(),
+        json={
+            "user_id": "user-with-key",
+            "device": _payload(user_id="user-with-key", device_id="device-with-key"),
+        },
+    )
+    assert response.status_code == 200
+
+
+def test_list_devices_without_key_is_rejected(client):
+    response = client.get("/api/v1/device-intelligence/users/user-list/devices")
+    assert response.status_code == 403
+
+
+def test_list_devices_with_key_is_accepted(client):
+    client.post(
+        "/api/v1/device-intelligence/enroll",
+        headers=_client_headers(),
+        json={
+            "user_id": "user-list-key",
+            "device": _payload(user_id="user-list-key", device_id="device-list-key"),
+        },
+    )
+    response = client.get(
+        "/api/v1/device-intelligence/users/user-list-key/devices",
+        headers=_client_headers(),
+    )
+    assert response.status_code == 200
