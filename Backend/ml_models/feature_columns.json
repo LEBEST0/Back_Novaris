@@ -1,0 +1,92 @@
+{
+  "feature_columns": [
+    "amount",
+    "hour",
+    "day_of_week",
+    "day_of_month",
+    "is_payday_window",
+    "account_age_days",
+    "has_history",
+    "sender_avg_amount_30d",
+    "amount_to_avg_ratio",
+    "is_known_receiver",
+    "tx_count_last_10min",
+    "tx_count_last_1h",
+    "sum_amount_last_1h",
+    "distinct_receivers_last_1h",
+    "kyc_level_basic",
+    "kyc_level_premium",
+    "kyc_level_standard",
+    "transaction_type_airtime_purchase",
+    "transaction_type_bill_payment",
+    "transaction_type_deposit",
+    "transaction_type_merchant_payment",
+    "transaction_type_transfer",
+    "transaction_type_withdrawal",
+    "channel_agent",
+    "channel_api",
+    "channel_mobile_app",
+    "channel_ussd",
+    "channel_web"
+  ],
+  "metadata": {
+    "model_version": "txn-monitoring-v1",
+    "trained_at": "2026-07-04T23:32:11.550164+00:00",
+    "n_train": 402183,
+    "n_test": 100546,
+    "fraud_rate_train": 0.001800175541979646,
+    "metrics": {
+      "auc_roc": 0.9993637036969757,
+      "auc_pr": 0.922972784023911,
+      "confusion_matrix": [
+        [
+          99905,
+          460
+        ],
+        [
+          6,
+          175
+        ]
+      ],
+      "classification_report": {
+        "0": {
+          "precision": 0.9999399465524317,
+          "recall": 0.9954167289393713,
+          "f1-score": 0.997673210968863,
+          "support": 100365.0
+        },
+        "1": {
+          "precision": 0.2755905511811024,
+          "recall": 0.9668508287292817,
+          "f1-score": 0.42892156862745096,
+          "support": 181.0
+        },
+        "accuracy": 0.9953653054323395,
+        "macro avg": {
+          "precision": 0.637765248866767,
+          "recall": 0.9811337788343265,
+          "f1-score": 0.7132973897981569,
+          "support": 100546.0
+        },
+        "weighted avg": {
+          "precision": 0.9986359937292243,
+          "recall": 0.9953653054323395,
+          "f1-score": 0.9966493607185914,
+          "support": 100546.0
+        }
+      }
+    },
+    "top_features": {
+      "transaction_type_transfer": 3.3035523891448975,
+      "is_known_receiver": 1.7514152526855469,
+      "amount_to_avg_ratio": 1.564433217048645,
+      "sender_avg_amount_30d": 1.366390347480774,
+      "amount": 1.2470661401748657,
+      "sum_amount_last_1h": 1.0891746282577515,
+      "hour": 0.6592280864715576,
+      "account_age_days": 0.5169009566307068,
+      "day_of_month": 0.3806399405002594,
+      "is_payday_window": 0.3637531101703644
+    }
+  }
+}
