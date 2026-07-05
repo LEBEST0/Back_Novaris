@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -32,6 +33,12 @@ class DeviceEnrollRequest(BaseModel):
     device: DeviceMetadataInput
 
 
+class DeviceAnalyzeRequest(DeviceMetadataInput):
+    request_id: str
+    timestamp: datetime
+    nonce: str
+
+
 class DeviceRiskResponse(BaseModel):
     module_name: str
     user_id: str
@@ -50,4 +57,3 @@ class DeviceEnrollResponse(BaseModel):
     device_id: str
     device_hash: str
     device_status: str
-

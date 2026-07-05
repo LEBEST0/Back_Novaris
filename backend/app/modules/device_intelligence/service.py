@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import os
+from datetime import datetime, timezone
 from typing import Any
 
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from backend.app.modules.device_intelligence import repository
@@ -11,6 +14,7 @@ from backend.app.modules.device_intelligence.models import DeviceStatus
 from backend.app.modules.device_intelligence.rules import evaluate_device_risk
 from backend.app.modules.device_intelligence.schemas import (
     DeviceEnrollRequest,
+    DeviceAnalyzeRequest,
     DeviceEnrollResponse,
     DeviceMetadataInput,
     DeviceRiskResponse,
@@ -18,6 +22,8 @@ from backend.app.modules.device_intelligence.schemas import (
 
 
 class DeviceIntelligenceService:
+    MAX_TIMESTAMP_DRIFT_SECONDS = 300
+
     def __init__(self, db: Session, predictor: DeviceIntelligenceMLPredictor | None = None) -> None:
         self.db = db
         self.predictor = predictor or DeviceIntelligenceMLPredictor()
@@ -49,7 +55,38 @@ class DeviceIntelligenceService:
             device_status=record.status,
         )
 
-    def analyze(self, payload: DeviceMetadataInput) -> DeviceRiskResponse:
+    @staticmethod
+    def _expected_client_key() -> str:
+        return os.getenv("NOVARIS_DEVICE_CLIENT_KEY", "novaris-device-client-key")
+
+    @staticmethod
+    def _validate_timestamp(timestamp: datetime) -> None:
+        now = datetime.now(timezone.utc)
+        current = timestamp if timestamp.tzinfo else timestamp.replace(tzinfo=timezone.utc)
+        delta = abs((now - current).total_seconds())
+        if delta > DeviceIntelligenceService.MAX_TIMESTAMP_DRIFT_SECONDS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="timestamp outside allowed 5 minute window",
+            )
+
+    def _validate_client_key(self, client_key: str | None) -> None:
+        if not client_key or client_key != self._expected_client_key():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="invalid or missing X-Novaris-Client-Key",
+            )
+
+    def analyze(self, payload: DeviceAnalyzeRequest, client_key: str | None) -> DeviceRiskResponse:
+        self._validate_client_key(client_key)
+        self._validate_timestamp(payload.timestamp)
+
+        if not repository.register_request_nonce(self.db, payload):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="nonce already used",
+            )
+
         device_hash = self.build_device_hash(payload)
         history_devices = repository.get_user_devices(self.db, payload.user_id)
         latest_trusted_device = repository.get_latest_trusted_device(self.db, payload.user_id)
@@ -106,4 +143,3 @@ class DeviceIntelligenceService:
             }
             for record in records
         ]
-

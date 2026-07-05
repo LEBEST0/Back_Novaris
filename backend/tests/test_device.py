@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -15,7 +15,8 @@ from backend.app.modules.device_intelligence.rules import evaluate_device_risk
 
 
 @pytest.fixture()
-def client(tmp_path: Path):
+def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("NOVARIS_DEVICE_CLIENT_KEY", "test-client-key")
     database_path = tmp_path / "device_intelligence_test.sqlite3"
     engine = create_engine(
         f"sqlite+pysqlite:///{database_path}",
@@ -58,6 +59,18 @@ def _payload(**overrides):
         "language": "fr",
     }
     payload.update(overrides)
+    return payload
+
+
+def _analyze_payload(**overrides):
+    payload = _payload(**overrides)
+    payload.update(
+        {
+            "request_id": "req-001",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "nonce": "nonce-001",
+        }
+    )
     return payload
 
 
@@ -135,7 +148,11 @@ def test_vpn_and_country_change_raise_risk():
 
 
 def test_analyze_endpoint_returns_all_fields(client):
-    response = client.post("/api/v1/device-intelligence/analyze", json=_payload())
+    response = client.post(
+        "/api/v1/device-intelligence/analyze",
+        headers={"X-Novaris-Client-Key": "test-client-key"},
+        json=_analyze_payload(),
+    )
     assert response.status_code == 200
     body = response.json()
     assert set(body.keys()) == {
@@ -220,7 +237,8 @@ def test_analyze_uses_persisted_history(client):
 
     response = client.post(
         "/api/v1/device-intelligence/analyze",
-        json=_payload(user_id="user-history", device_id="device-history"),
+        headers={"X-Novaris-Client-Key": "test-client-key"},
+        json=_analyze_payload(user_id="user-history", device_id="device-history"),
     )
     assert response.status_code == 200
     body = response.json()
@@ -306,3 +324,67 @@ def test_score_is_always_bounded():
         },
     )
     assert 0 <= result["score"] <= 100
+
+
+def test_valid_analyze_request_is_accepted(client):
+    response = client.post(
+        "/api/v1/device-intelligence/analyze",
+        headers={"X-Novaris-Client-Key": "test-client-key"},
+        json=_analyze_payload(),
+    )
+    assert response.status_code == 200
+    assert response.json()["decision"] == "ALLOW_PIN"
+
+
+def test_expired_timestamp_is_rejected(client):
+    payload = _analyze_payload()
+    payload["timestamp"] = (datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat()
+    response = client.post(
+        "/api/v1/device-intelligence/analyze",
+        headers={"X-Novaris-Client-Key": "test-client-key"},
+        json=payload,
+    )
+    assert response.status_code == 400
+
+
+def test_nonce_reuse_is_rejected(client):
+    payload = _analyze_payload(user_id="user-nonce", device_id="device-nonce")
+    first = client.post(
+        "/api/v1/device-intelligence/analyze",
+        headers={"X-Novaris-Client-Key": "test-client-key"},
+        json=payload,
+    )
+    second = client.post(
+        "/api/v1/device-intelligence/analyze",
+        headers={"X-Novaris-Client-Key": "test-client-key"},
+        json=payload,
+    )
+    assert first.status_code == 200
+    assert second.status_code == 409
+
+
+def test_missing_client_key_is_rejected(client):
+    response = client.post(
+        "/api/v1/device-intelligence/analyze",
+        json=_analyze_payload(),
+    )
+    assert response.status_code == 403
+
+
+def test_api_contract_is_conserved(client):
+    response = client.post(
+        "/api/v1/device-intelligence/analyze",
+        headers={"X-Novaris-Client-Key": "test-client-key"},
+        json=_analyze_payload(),
+    )
+    assert set(response.json().keys()) == {
+        "module_name",
+        "user_id",
+        "device_id",
+        "score",
+        "risk_level",
+        "decision",
+        "reasons",
+        "evidence",
+        "adapter_mode",
+    }

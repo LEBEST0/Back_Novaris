@@ -1,18 +1,51 @@
 # Device Intelligence
 
-Module de scoring de confiance appareil pour Novaris AI.
+Rule-based device trust scoring module for Novaris AI.
 
-- Analyse rule-based pour ce sprint.
-- Enrôle un appareil de confiance par utilisateur.
-- Retourne une décision d'accès sensible: `ALLOW_PIN`, `REQUIRE_OTP`, `REQUIRE_STEP_UP`, `DENY_PIN`.
-- Prévu pour accueillir un prédicteur ML plus tard sans changer le contrat API.
+- Enrolls trusted devices per user.
+- Analyzes a device and returns one of: `ALLOW_PIN`, `REQUIRE_OTP`, `REQUIRE_STEP_UP`, `DENY_PIN`.
+- Uses SQLite persistence through SQLAlchemy for development.
+- Keeps the API stable while the security layer evolves.
 
-## Persistance durable de l'historique appareil
+## Durable device history persistence
 
-L'historique appareil est stocké dans SQLite via SQLAlchemy pour garder une mémoire entre redémarrages en environnement de développement.
+Device history is stored in SQLite so it survives backend restarts during development and local testing.
 
-- `create_all()` est utilisé pour ce sprint V1 afin d'initialiser les tables.
-- Cela reste acceptable tant qu'Alembic n'est pas encore en place.
-- En production, il faudra migrer vers PostgreSQL avec des migrations Alembic.
+- `create_all()` is used only as a V1 bootstrap mechanism.
+- This is acceptable until Alembic migrations are added.
+- Production should move to PostgreSQL with Alembic-managed migrations.
 
-Le module ne stocke pas de données matérielles sensibles non nécessaires comme IMEI ou numéro de série.
+Stored fields:
+
+- user and device identifiers
+- device hash
+- brand, model, OS name, OS version
+- IP, country, city
+- trust status
+- first seen, last used, created, and updated timestamps
+
+Not stored:
+
+- IMEI
+- hardware serial number
+- biometric data
+- unrelated personal data
+
+## Security layer V3
+
+The `analyze` payload now includes:
+
+- `request_id`
+- `timestamp`
+- `nonce`
+
+The request must also include `X-Novaris-Client-Key`.
+
+Validation rules:
+
+- timestamps older than 5 minutes are rejected;
+- nonce reuse is rejected;
+- missing or invalid client key is rejected.
+
+This client key is a temporary lightweight guard. It will later be replaced by a real SDK signature and attestation flow.
+

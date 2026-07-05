@@ -3,10 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import desc, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.app.modules.device_intelligence.models import DeviceStatus, UserDeviceFingerprint
-from backend.app.modules.device_intelligence.schemas import DeviceMetadataInput
+from backend.app.modules.device_intelligence.models import DeviceRequestNonce, DeviceStatus, UserDeviceFingerprint
+from backend.app.modules.device_intelligence.schemas import DeviceAnalyzeRequest, DeviceMetadataInput
 
 
 def _utcnow() -> datetime:
@@ -112,3 +113,20 @@ def mark_device_blocked(
     device_hash: str,
 ) -> UserDeviceFingerprint:
     return _upsert_device(db, device, device_hash, DeviceStatus.BLOCKED.value)
+
+
+def register_request_nonce(db: Session, payload: DeviceAnalyzeRequest) -> bool:
+    record = DeviceRequestNonce(
+        user_id=payload.user_id,
+        request_id=payload.request_id,
+        nonce=payload.nonce,
+        request_timestamp=payload.timestamp,
+        created_at=_utcnow(),
+    )
+    db.add(record)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return False
+    return True

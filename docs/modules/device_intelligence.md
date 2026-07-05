@@ -1,64 +1,64 @@
 # Device Intelligence
 
-## 1. Rôle du module
+## 1. Role of the module
 
-Device Intelligence évalue la fiabilité d'un appareil avant une action sensible: connexion, PIN, transaction ou changement de mot de passe.
+Device Intelligence evaluates whether a device is trustworthy before a sensitive action such as login, PIN entry, transaction, or password change.
 
-## 2. Fonctionnement production
+## 2. Production flow
 
-En production, le backend reçoit un payload de métadonnées collecté côté mobile, le compare à l'historique de l'utilisateur, calcule un score de risque et renvoie une décision d'accès.
+In production, the backend receives device metadata collected by a mobile SDK, compares it with the user history, computes a risk score, and returns a decision.
 
-## 3. Différence entre SDK réel et payload mocké
+## 3. Real SDK vs mock payload
 
-Le SDK réel Android/iOS collecte les signaux localement sur le terminal. Dans ce sprint, le backend reçoit des données mockées envoyées directement par API pour valider le contrat fonctionnel.
+The real Android/iOS SDK collects signals locally on the device. In this sprint, the backend receives mock payloads sent directly by API so the contract can be validated before native integration.
 
-## 4. Données collectées
+## 4. Collected data
 
 - `user_id`
 - `device_id`
-- marque, modèle
-- système d'exploitation et version
-- état root / émulateur / VPN / proxy
-- adresse IP, pays, ville
+- brand, model
+- OS name and version
+- root / emulator / VPN / proxy flags
+- IP address, country, city
 - latitude, longitude
-- langue
-- version applicative
+- language
+- app version
 
-## 5. Règles de scoring
+## 5. Scoring rules
 
 - Rooted: +40
 - Emulator: +45
 - VPN: +20
 - Proxy: +20
-- Nouvel appareil: +30
-- Changement de marque: +25
-- Changement de modèle: +20
-- Changement de pays: +25
-- Changement de ville: +10
-- OS très différent: +10
+- New device: +30
+- Brand change: +25
+- Model change: +20
+- Country change: +25
+- City change: +10
+- Very different OS: +10
 
-Cas critiques:
+Critical cases:
 
-- `is_rooted = true` ou `is_emulator = true` force un niveau critique.
-- `is_rooted = true` et `is_emulator = true` déclenche un blocage immédiat.
-- `is_vpn = true` avec changement de pays élève le risque au moins au niveau `HIGH`.
+- `is_rooted = true` or `is_emulator = true` forces a critical risk level.
+- `is_rooted = true` and `is_emulator = true` triggers an immediate block.
+- `is_vpn = true` with a country change raises the risk to at least `HIGH`.
 
-Le score final est borné à `0..100`.
+The final score is always bounded to `0..100`.
 
-## 6. Décisions possibles
+## 6. Possible decisions
 
 - `ALLOW_PIN`
 - `REQUIRE_OTP`
 - `REQUIRE_STEP_UP`
 - `DENY_PIN`
 
-## 7. Endpoints API
+## 7. API endpoints
 
 - `POST /api/v1/device-intelligence/enroll`
 - `POST /api/v1/device-intelligence/analyze`
 - `GET /api/v1/device-intelligence/users/{user_id}/devices`
 
-## 8. Exemple de payload
+## 8. Example payload
 
 ```json
 {
@@ -78,11 +78,14 @@ Le score final est borné à `0..100`.
   "city": "Abidjan",
   "latitude": 5.36,
   "longitude": -4.01,
-  "language": "fr"
+  "language": "fr",
+  "request_id": "req-001",
+  "timestamp": "2026-07-05T10:00:00Z",
+  "nonce": "nonce-001"
 }
 ```
 
-## 9. Exemple de réponse
+## 9. Example response
 
 ```json
 {
@@ -98,55 +101,72 @@ Le score final est borné à `0..100`.
 }
 ```
 
-## 10. Limites actuelles
+## 10. Current limits
 
-- Pas de vrai SDK mobile intégré.
-- Pas de modèle ML entraîné.
-- Pas de corrélation réseau avancée.
-- La persistance de développement repose sur SQLite.
+- No real mobile SDK integration.
+- No trained ML model.
+- No advanced network correlation.
+- Development persistence uses SQLite.
 
-## Persistance durable de l'historique appareil
+## Durable device history persistence
 
-L'historique des appareils est nécessaire pour comparer un nouvel événement à un comportement passé stable. Sans historique durable, le module ne peut pas détecter correctement un appareil déjà connu après redémarrage.
+The device history must survive backend restarts so the risk engine can compare the current event with past trusted devices.
 
-Ce qui est stocké:
+Stored data:
 
-- identifiant utilisateur et appareil;
-- hash appareil;
-- marque, modèle, OS, version OS;
-- IP, pays, ville;
-- statut de confiance;
-- timestamps de première détection, dernière utilisation, création et mise à jour.
+- user and device identifiers;
+- device hash;
+- brand, model, OS, OS version;
+- IP, country, city;
+- trust status;
+- first seen, last used, created, and updated timestamps.
 
-Ce qui n'est pas stocké:
+Not stored:
 
 - IMEI;
-- numéro de série matériel;
-- données biométriques;
-- données non nécessaires au scoring.
+- hardware serial number;
+- biometric data;
+- unrelated personal data.
 
-Limite actuelle:
+Current limitation:
 
-- SQLite est suffisant pour la V1 dev et les tests locaux.
-- `Base.metadata.create_all()` est acceptable à ce stade pour initialiser les tables.
+- SQLite is acceptable for V1 development and local testing.
+- `Base.metadata.create_all()` is used for bootstrap only.
 
-Évolution future:
+Future evolution:
 
-- migration vers PostgreSQL;
-- adoption d'Alembic pour les migrations versionnées;
-- séparation claire entre bootstrap V1 et schéma de production.
+- PostgreSQL for production;
+- Alembic for versioned migrations;
+- clearer separation between V1 bootstrap and production schema management.
 
-## 11. Évolutions futures Android/iOS
+## 11. Android / iOS future work
 
-- Intégration du collector natif Android/iOS.
-- Ajout de signaux device integrity et attestation.
-- Normalisation des buckets de version OS.
-- Enrichissement avec signaux comportementaux.
+- Native SDK collector integration.
+- Device integrity and attestation signals.
+- OS version bucketing.
+- Behavioral enrichment.
 
-## 12. Points de sécurité et confidentialité
+## 12. Security and privacy
 
-- Ne pas collecter IMEI ni numéro de série matériel.
-- Ne pas demander `READ_PHONE_STATE`.
-- Réduire les données brutes envoyées au backend.
-- Hasher les attributs device sensibles côté SDK.
-- L'IP et le pays peuvent aussi être déterminés côté backend à partir de la requête.
+- Do not collect IMEI or hardware serial.
+- Do not request `READ_PHONE_STATE`.
+- Minimize raw device data sent to backend.
+- Hash sensitive device attributes on the SDK side when possible.
+- IP and country can also be resolved by the backend from the request.
+
+## 13. Security layer V3
+
+The `analyze` endpoint now expects:
+
+- `request_id`
+- `timestamp`
+- `nonce`
+- `X-Novaris-Client-Key` header
+
+Validation rules:
+
+- requests older than 5 minutes are rejected;
+- nonce reuse is rejected;
+- missing or invalid client key is rejected.
+
+The client key is a lightweight guard for now. It will later be replaced by a real SDK signature and attestation flow.

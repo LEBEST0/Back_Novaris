@@ -44,3 +44,15 @@ class UserDeviceFingerprint(Base):
         default=utcnow,
         onupdate=utcnow,
     )
+
+
+class DeviceRequestNonce(Base):
+    __tablename__ = "device_request_nonces"
+    __table_args__ = (UniqueConstraint("nonce", name="uq_device_request_nonce"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    request_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
+    nonce: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
+    request_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
