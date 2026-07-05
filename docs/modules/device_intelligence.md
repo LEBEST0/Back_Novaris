@@ -232,3 +232,14 @@ Validation rules:
 The client key is a lightweight guard for now. It is not a cryptographic signature. It will later be replaced by a real SDK signature and attestation flow using Play Integrity on Android and App Attest on iOS.
 
 Configuration is now organized under `backend/app/shared/config/` with `settings.py` and `constants.py`.
+
+## 15. Lightweight SDK signature
+
+Payload endpoints also require `X-Novaris-Signature`.
+
+- The signature is an HMAC-SHA256 over the canonical JSON body.
+- Missing signature returns `403`.
+- Invalid signature returns `403`.
+- This protects the payload against tampering between the device and the backend.
+
+The signature is intentionally lightweight for now. It will later be replaced by Play Integrity on Android and App Attest on iOS with a stronger attestation-based signing flow.

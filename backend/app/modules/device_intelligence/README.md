@@ -106,3 +106,14 @@ Validation rules:
 This client key is a temporary lightweight guard. It is not a cryptographic signature and it can be replaced later by a real SDK signature plus Play Integrity / App Attest.
 
 Configuration now lives under `backend/app/shared/config/` with `settings.py` and `constants.py`.
+
+## Security layer V4
+
+Payload endpoints also require `X-Novaris-Signature`.
+
+- The signature is an HMAC-SHA256 computed from the canonical JSON payload.
+- Missing signature returns `403`.
+- Invalid signature returns `403`.
+- This protects the payload against in-transit JSON tampering.
+
+The mechanism is still lightweight and will later be replaced by Play Integrity / App Attest backed signing.

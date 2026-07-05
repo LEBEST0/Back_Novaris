@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
+import hmac
+import json
 from pathlib import Path
 
 import pytest
@@ -17,6 +20,7 @@ from backend.app.modules.device_intelligence.rules import evaluate_device_risk
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("NOVARIS_DEVICE_CLIENT_KEY", "test-client-key")
+    monkeypatch.setenv("NOVARIS_DEVICE_SIGNATURE_SECRET", "test-signature-secret")
     database_path = tmp_path / "device_intelligence_test.sqlite3"
     engine = create_engine(
         f"sqlite+pysqlite:///{database_path}",
@@ -80,6 +84,20 @@ def _analyze_payload(**overrides):
 
 def _client_headers() -> dict[str, str]:
     return {"X-Novaris-Client-Key": "test-client-key"}
+
+
+def _signed_post(client, url: str, payload: dict, *, extra_headers: dict[str, str] | None = None):
+    body = json.dumps(payload, separators=(",", ":"), sort_keys=True, ensure_ascii=False)
+    signature = hmac.new(
+        b"test-signature-secret",
+        body.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    headers = _client_headers() | {"X-Novaris-Signature": signature}
+    if extra_headers:
+        headers |= extra_headers
+    headers["Content-Type"] = "application/json"
+    return client.post(url, headers=headers, content=body)
 
 
 def _utcnow() -> datetime:
@@ -156,11 +174,7 @@ def test_vpn_and_country_change_raise_risk():
 
 
 def test_analyze_endpoint_returns_all_fields(client):
-    response = client.post(
-        "/api/v1/device-intelligence/analyze",
-        headers=_client_headers(),
-        json=_analyze_payload(),
-    )
+    response = _signed_post(client, "/api/v1/device-intelligence/analyze", _analyze_payload())
     assert response.status_code == 200
     body = response.json()
     assert set(body.keys()) == {
@@ -177,10 +191,10 @@ def test_analyze_endpoint_returns_all_fields(client):
 
 
 def test_enroll_endpoint_works(client):
-    response = client.post(
+    response = _signed_post(
+        client,
         "/api/v1/device-intelligence/enroll",
-        headers=_client_headers(),
-        json={
+        {
             "user_id": "user-001",
             "device": _payload(),
         },
@@ -193,10 +207,10 @@ def test_enroll_endpoint_works(client):
 
 
 def test_enroll_persists_device_in_database(client, tmp_path: Path):
-    response = client.post(
+    response = _signed_post(
+        client,
         "/api/v1/device-intelligence/enroll",
-        headers=_client_headers(),
-        json={
+        {
             "user_id": "user-db",
             "device": _payload(user_id="user-db", device_id="device-db"),
         },
@@ -221,10 +235,10 @@ def test_enroll_persists_device_in_database(client, tmp_path: Path):
 
 
 def test_list_devices_returns_enrolled_device(client):
-    client.post(
+    _signed_post(
+        client,
         "/api/v1/device-intelligence/enroll",
-        headers=_client_headers(),
-        json={
+        {
             "user_id": "user-list",
             "device": _payload(user_id="user-list", device_id="device-list"),
         },
@@ -241,19 +255,19 @@ def test_list_devices_returns_enrolled_device(client):
 
 
 def test_analyze_uses_persisted_history(client):
-    client.post(
+    _signed_post(
+        client,
         "/api/v1/device-intelligence/enroll",
-        headers=_client_headers(),
-        json={
+        {
             "user_id": "user-history",
             "device": _payload(user_id="user-history", device_id="device-history"),
         },
     )
 
-    response = client.post(
+    response = _signed_post(
+        client,
         "/api/v1/device-intelligence/analyze",
-        headers=_client_headers(),
-        json=_analyze_payload(user_id="user-history", device_id="device-history"),
+        _analyze_payload(user_id="user-history", device_id="device-history"),
     )
     assert response.status_code == 200
     body = response.json()
@@ -313,8 +327,8 @@ def test_duplicate_enroll_does_not_create_second_record(client):
         "user_id": "user-dup",
         "device": _payload(user_id="user-dup", device_id="device-dup"),
     }
-    first = client.post("/api/v1/device-intelligence/enroll", headers=_client_headers(), json=payload)
-    second = client.post("/api/v1/device-intelligence/enroll", headers=_client_headers(), json=payload)
+    first = _signed_post(client, "/api/v1/device-intelligence/enroll", payload)
+    second = _signed_post(client, "/api/v1/device-intelligence/enroll", payload)
     assert first.status_code == 200
     assert second.status_code == 200
 
@@ -342,85 +356,50 @@ def test_score_is_always_bounded():
 
 
 def test_valid_analyze_request_is_accepted(client):
-    response = client.post(
-        "/api/v1/device-intelligence/analyze",
-        headers=_client_headers(),
-        json=_analyze_payload(),
-    )
+    response = _signed_post(client, "/api/v1/device-intelligence/analyze", _analyze_payload())
     assert response.status_code == 200
     assert response.json()["decision"] == "ALLOW_PIN"
 
 
 def test_payload_v1_is_accepted(client):
-    response = client.post(
-        "/api/v1/device-intelligence/analyze",
-        headers=_client_headers(),
-        json=_analyze_payload(payload_version="v1"),
-    )
+    response = _signed_post(client, "/api/v1/device-intelligence/analyze", _analyze_payload(payload_version="v1"))
     assert response.status_code == 200
 
 
 def test_unknown_payload_version_is_rejected(client):
-    response = client.post(
-        "/api/v1/device-intelligence/analyze",
-        headers=_client_headers(),
-        json=_analyze_payload(payload_version="v2"),
-    )
+    response = _signed_post(client, "/api/v1/device-intelligence/analyze", _analyze_payload(payload_version="v2"))
     assert response.status_code == 422
     assert "payload_version" in response.text
 
 
 @pytest.mark.parametrize("platform", ["ANDROID", "IOS", "WEB_MOCK"])
 def test_supported_platforms_are_accepted(client, platform: str):
-    response = client.post(
-        "/api/v1/device-intelligence/analyze",
-        headers=_client_headers(),
-        json=_analyze_payload(platform=platform),
-    )
+    response = _signed_post(client, "/api/v1/device-intelligence/analyze", _analyze_payload(platform=platform))
     assert response.status_code == 200
 
 
 def test_expired_timestamp_is_rejected(client):
     payload = _analyze_payload()
     payload["timestamp"] = (datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat()
-    response = client.post(
-        "/api/v1/device-intelligence/analyze",
-        headers=_client_headers(),
-        json=payload,
-    )
+    response = _signed_post(client, "/api/v1/device-intelligence/analyze", payload)
     assert response.status_code == 400
 
 
 def test_nonce_reuse_is_rejected(client):
     payload = _analyze_payload(user_id="user-nonce", device_id="device-nonce")
-    first = client.post(
-        "/api/v1/device-intelligence/analyze",
-        headers=_client_headers(),
-        json=payload,
-    )
-    second = client.post(
-        "/api/v1/device-intelligence/analyze",
-        headers=_client_headers(),
-        json=payload,
-    )
+    first = _signed_post(client, "/api/v1/device-intelligence/analyze", payload)
+    second = _signed_post(client, "/api/v1/device-intelligence/analyze", payload)
     assert first.status_code == 200
     assert second.status_code == 409
 
 
 def test_missing_client_key_is_rejected(client):
-    response = client.post(
-        "/api/v1/device-intelligence/analyze",
-        json=_analyze_payload(),
-    )
+    response = client.post("/api/v1/device-intelligence/analyze", json=_analyze_payload())
     assert response.status_code == 403
 
 
 def test_api_contract_is_conserved(client):
-    response = client.post(
-        "/api/v1/device-intelligence/analyze",
-        headers=_client_headers(),
-        json=_analyze_payload(),
-    )
+    response = _signed_post(client, "/api/v1/device-intelligence/analyze", _analyze_payload())
     assert set(response.json().keys()) == {
         "module_name",
         "user_id",
@@ -446,10 +425,10 @@ def test_enroll_without_key_is_rejected(client):
 
 
 def test_enroll_with_key_is_accepted(client):
-    response = client.post(
+    response = _signed_post(
+        client,
         "/api/v1/device-intelligence/enroll",
-        headers=_client_headers(),
-        json={
+        {
             "user_id": "user-with-key",
             "device": _payload(user_id="user-with-key", device_id="device-with-key"),
         },
@@ -463,10 +442,10 @@ def test_list_devices_without_key_is_rejected(client):
 
 
 def test_list_devices_with_key_is_accepted(client):
-    client.post(
+    _signed_post(
+        client,
         "/api/v1/device-intelligence/enroll",
-        headers=_client_headers(),
-        json={
+        {
             "user_id": "user-list-key",
             "device": _payload(user_id="user-list-key", device_id="device-list-key"),
         },
@@ -476,3 +455,34 @@ def test_list_devices_with_key_is_accepted(client):
         headers=_client_headers(),
     )
     assert response.status_code == 200
+
+
+def test_analyze_without_signature_is_rejected(client):
+    response = client.post(
+        "/api/v1/device-intelligence/analyze",
+        headers=_client_headers(),
+        json=_analyze_payload(),
+    )
+    assert response.status_code == 403
+
+
+def test_enroll_without_signature_is_rejected(client):
+    response = client.post(
+        "/api/v1/device-intelligence/enroll",
+        headers=_client_headers(),
+        json={
+            "user_id": "user-no-signature",
+            "device": _payload(user_id="user-no-signature", device_id="device-no-signature"),
+        },
+    )
+    assert response.status_code == 403
+
+
+def test_invalid_signature_is_rejected(client):
+    body = json.dumps(_analyze_payload(), separators=(",", ":"), sort_keys=True, ensure_ascii=False)
+    response = client.post(
+        "/api/v1/device-intelligence/analyze",
+        headers=_client_headers() | {"X-Novaris-Signature": "bad-signature"},
+        content=body,
+    )
+    assert response.status_code == 403

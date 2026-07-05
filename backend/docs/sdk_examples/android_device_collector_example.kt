@@ -6,6 +6,8 @@ import android.net.NetworkCapabilities
 import android.os.Build
 import org.json.JSONObject
 import java.io.File
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import java.security.MessageDigest
 
 class DeviceMetadataCollector {
@@ -122,5 +124,13 @@ class DeviceMetadataCollector {
             put("language", language)
             put("device_hash", deviceHash)
         }
+    }
+
+    fun generateSignature(payloadJson: String, signatureSecret: String): String {
+        val mac = Mac.getInstance("HmacSHA256")
+        val keySpec = SecretKeySpec(signatureSecret.toByteArray(Charsets.UTF_8), "HmacSHA256")
+        mac.init(keySpec)
+        val digest = mac.doFinal(payloadJson.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { byte -> "%02x".format(byte) }
     }
 }

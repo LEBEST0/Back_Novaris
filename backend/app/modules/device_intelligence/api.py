@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from backend.app.api.dependencies import get_db, require_device_client_key
+from backend.app.api.dependencies import get_db, require_device_client_key, require_device_signature
 from backend.app.modules.device_intelligence.schemas import (
     DeviceAnalyzeRequest,
     DeviceEnrollRequest,
@@ -18,6 +18,7 @@ def enroll_device(
     payload: DeviceEnrollRequest,
     db: Session = Depends(get_db),
     _: None = Depends(require_device_client_key),
+    __: None = Depends(require_device_signature),
 ):
     service = DeviceIntelligenceService(db)
     return service.enroll(payload)
@@ -28,6 +29,7 @@ def analyze_device(
     payload: DeviceAnalyzeRequest,
     db: Session = Depends(get_db),
     _: None = Depends(require_device_client_key),
+    __: None = Depends(require_device_signature),
 ) -> DeviceRiskResponse:
     service = DeviceIntelligenceService(db)
     return service.analyze(payload)
