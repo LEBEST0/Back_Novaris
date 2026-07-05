@@ -69,8 +69,12 @@ def _analyze_payload(**overrides):
             "request_id": "req-001",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "nonce": "nonce-001",
+            "sdk_version": "1.0.0",
+            "payload_version": "v1",
+            "platform": "ANDROID",
         }
     )
+    payload.update(overrides)
     return payload
 
 
@@ -345,6 +349,35 @@ def test_valid_analyze_request_is_accepted(client):
     )
     assert response.status_code == 200
     assert response.json()["decision"] == "ALLOW_PIN"
+
+
+def test_payload_v1_is_accepted(client):
+    response = client.post(
+        "/api/v1/device-intelligence/analyze",
+        headers=_client_headers(),
+        json=_analyze_payload(payload_version="v1"),
+    )
+    assert response.status_code == 200
+
+
+def test_unknown_payload_version_is_rejected(client):
+    response = client.post(
+        "/api/v1/device-intelligence/analyze",
+        headers=_client_headers(),
+        json=_analyze_payload(payload_version="v2"),
+    )
+    assert response.status_code == 422
+    assert "payload_version" in response.text
+
+
+@pytest.mark.parametrize("platform", ["ANDROID", "IOS", "WEB_MOCK"])
+def test_supported_platforms_are_accepted(client, platform: str):
+    response = client.post(
+        "/api/v1/device-intelligence/analyze",
+        headers=_client_headers(),
+        json=_analyze_payload(platform=platform),
+    )
+    assert response.status_code == 200
 
 
 def test_expired_timestamp_is_rejected(client):

@@ -7,6 +7,54 @@ Rule-based device trust scoring module for Novaris AI.
 - Uses SQLite persistence through SQLAlchemy for development.
 - Keeps the API stable while the security layer evolves.
 
+## SDK contract v1
+
+The current payload contract is version `v1`.
+
+Supported `platform` values:
+
+- `ANDROID`
+- `IOS`
+- `WEB_MOCK`
+
+Mandatory `analyze` fields:
+
+- `user_id`
+- `device_id`
+- `brand`
+- `model`
+- `os_name`
+- `os_version`
+- `is_rooted`
+- `is_emulator`
+- `is_vpn`
+- `is_proxy`
+- `request_id`
+- `timestamp`
+- `nonce`
+- `payload_version`
+- `platform`
+
+Optional fields:
+
+- `app_version`
+- `sdk_version`
+- `ip_address`
+- `country`
+- `city`
+- `latitude`
+- `longitude`
+- `language`
+
+Forbidden fields:
+
+- IMEI
+- hardware serial number
+- phone number
+- SIM identifiers
+- biometric data
+- any unnecessary personal data
+
 ## Durable device history persistence
 
 Device history is stored in SQLite so it survives backend restarts during development and local testing.
@@ -44,11 +92,16 @@ The `analyze` payload also includes:
 - `request_id`
 - `timestamp`
 - `nonce`
+- `sdk_version`
+- `payload_version`
+- `platform`
 
 Validation rules:
 
 - timestamps older than 5 minutes are rejected;
 - nonce reuse is rejected;
-- missing or invalid client key is rejected.
+- missing or invalid client key is rejected;
+- unsupported payload versions are rejected with a validation error.
 
 This client key is a temporary lightweight guard. It is not a cryptographic signature and it can be replaced later by a real SDK signature plus Play Integrity / App Attest.
+

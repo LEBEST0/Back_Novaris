@@ -10,6 +10,12 @@ import java.security.MessageDigest
 
 class DeviceMetadataCollector {
 
+    enum class DevicePlatform {
+        ANDROID,
+        IOS,
+        WEB_MOCK,
+    }
+
     data class DeviceSignals(
         val brand: String = Build.BRAND,
         val manufacturer: String = Build.MANUFACTURER,
@@ -84,6 +90,9 @@ class DeviceMetadataCollector {
         userId: String,
         deviceId: String,
         appVersion: String? = null,
+        sdkVersion: String = "1.0.0",
+        payloadVersion: String = "v1",
+        platform: DevicePlatform = DevicePlatform.ANDROID,
         language: String = "fr",
     ): JSONObject {
         val signals = DeviceSignals()
@@ -98,6 +107,9 @@ class DeviceMetadataCollector {
             put("os_name", signals.osName)
             put("os_version", signals.osVersion)
             put("app_version", appVersion ?: JSONObject.NULL)
+            put("sdk_version", sdkVersion)
+            put("payload_version", payloadVersion)
+            put("platform", platform.name)
             put("is_rooted", isRooted())
             put("is_emulator", isEmulator())
             put("is_vpn", isVpnActive(context))
@@ -112,4 +124,3 @@ class DeviceMetadataCollector {
         }
     }
 }
-

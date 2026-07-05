@@ -12,6 +12,8 @@ In production, the backend receives device metadata collected by a mobile SDK, c
 
 The real Android/iOS SDK collects signals locally on the device. In this sprint, the backend receives mock payloads sent directly by API so the contract can be validated before native integration.
 
+The current SDK payload contract is version `v1`.
+
 ## 4. Collected data
 
 - `user_id`
@@ -23,6 +25,9 @@ The real Android/iOS SDK collects signals locally on the device. In this sprint,
 - latitude, longitude
 - language
 - app version
+- `sdk_version`
+- `payload_version`
+- `platform`
 
 ## 5. Scoring rules
 
@@ -58,7 +63,59 @@ The final score is always bounded to `0..100`.
 - `POST /api/v1/device-intelligence/analyze`
 - `GET /api/v1/device-intelligence/users/{user_id}/devices`
 
-## 8. Example payload
+## 8. SDK contract v1
+
+Mandatory fields for `analyze`:
+
+- `user_id`
+- `device_id`
+- `brand`
+- `model`
+- `os_name`
+- `os_version`
+- `is_rooted`
+- `is_emulator`
+- `is_vpn`
+- `is_proxy`
+- `request_id`
+- `timestamp`
+- `nonce`
+- `payload_version`
+- `platform`
+
+Optional fields:
+
+- `app_version`
+- `sdk_version`
+- `ip_address`
+- `country`
+- `city`
+- `latitude`
+- `longitude`
+- `language`
+
+Forbidden fields:
+
+- IMEI
+- hardware serial number
+- phone number
+- SIM identifiers
+- biometric data
+- any unnecessary personal data
+
+Supported `platform` values:
+
+- `ANDROID`
+- `IOS`
+- `WEB_MOCK`
+
+Supported payload version:
+
+- `v1`
+
+Unsupported payload versions are rejected with a clear validation error.
+
+## 9. Example payload
 
 ```json
 {
@@ -69,6 +126,9 @@ The final score is always bounded to `0..100`.
   "os_name": "Android",
   "os_version": "14",
   "app_version": "1.0.0",
+  "sdk_version": "1.0.0",
+  "payload_version": "v1",
+  "platform": "ANDROID",
   "is_rooted": false,
   "is_emulator": false,
   "is_vpn": false,
@@ -85,7 +145,7 @@ The final score is always bounded to `0..100`.
 }
 ```
 
-## 9. Example response
+## 10. Example response
 
 ```json
 {
@@ -101,7 +161,7 @@ The final score is always bounded to `0..100`.
 }
 ```
 
-## 10. Current limits
+## 11. Current limits
 
 - No real mobile SDK integration.
 - No trained ML model.
@@ -139,14 +199,14 @@ Future evolution:
 - Alembic for versioned migrations;
 - clearer separation between V1 bootstrap and production schema management.
 
-## 11. Android / iOS future work
+## 12. Android / iOS future work
 
 - Native SDK collector integration.
 - Device integrity and attestation signals.
 - OS version bucketing.
 - Behavioral enrichment.
 
-## 12. Security and privacy
+## 13. Security and privacy
 
 - Do not collect IMEI or hardware serial.
 - Do not request `READ_PHONE_STATE`.
@@ -154,7 +214,7 @@ Future evolution:
 - Hash sensitive device attributes on the SDK side when possible.
 - IP and country can also be resolved by the backend from the request.
 
-## 13. Security layer V3
+## 14. Security layer V3
 
 All device intelligence endpoints now expect `X-Novaris-Client-Key`:
 
@@ -162,16 +222,11 @@ All device intelligence endpoints now expect `X-Novaris-Client-Key`:
 - `POST /api/v1/device-intelligence/analyze`
 - `GET /api/v1/device-intelligence/users/{user_id}/devices`
 
-The `analyze` payload now also expects:
-
-- `request_id`
-- `timestamp`
-- `nonce`
-
 Validation rules:
 
 - requests older than 5 minutes are rejected;
 - nonce reuse is rejected;
-- missing or invalid client key is rejected.
+- missing or invalid client key is rejected;
+- unsupported payload versions are rejected with a validation error.
 
 The client key is a lightweight guard for now. It is not a cryptographic signature. It will later be replaced by a real SDK signature and attestation flow using Play Integrity on Android and App Attest on iOS.

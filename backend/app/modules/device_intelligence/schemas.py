@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 from typing import Any
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class DevicePlatform(str, Enum):
+    ANDROID = "ANDROID"
+    IOS = "IOS"
+    WEB_MOCK = "WEB_MOCK"
 
 
 class DeviceMetadataInput(BaseModel):
@@ -37,6 +45,9 @@ class DeviceAnalyzeRequest(DeviceMetadataInput):
     request_id: str
     timestamp: datetime
     nonce: str
+    sdk_version: str | None = None
+    payload_version: Literal["v1"] = "v1"
+    platform: DevicePlatform
 
 
 class DeviceRiskResponse(BaseModel):
