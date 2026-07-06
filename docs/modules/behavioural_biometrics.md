@@ -120,20 +120,39 @@ Decisions:
 }
 ```
 
-## 10. Limits currently accepted
+## 10. Persistent storage
 
-- In-memory repository only.
-- No durable persistence yet.
+The behavioural profile is now persisted in SQLite through SQLAlchemy.
+
+Stored:
+
+- user profile metadata
+- sample count
+- behavioural baseline aggregates
+- individual behavioural samples
+
+Not stored:
+
+- real PIN
+- password
+- exact typed content
+- conversations
+- facial biometric data
+- personal contacts
+
+SQLite is the development database for this phase. PostgreSQL plus Alembic migrations should be used for production.
+
+## 11. Current limits
+
+- SQLite is still the development persistence layer.
 - No anti-replay.
 - No signature.
 - No real SDK.
 - No real ML.
 
-## 11. Next phases
+## 12. Next phases
 
-- durable persistence
-- SQLAlchemy repository
 - SDK integration
 - stronger validation
 - ML model integration
-
+- PostgreSQL + Alembic

@@ -32,8 +32,8 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db() -> None:
     from backend.app.modules.device_intelligence import models  # noqa: F401
+    from backend.app.modules.behavioural_biometrics import models as behavioural_models  # noqa: F401
 
     if engine.url.drivername.startswith("sqlite") and engine.url.database:
         Path(engine.url.database).parent.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
-

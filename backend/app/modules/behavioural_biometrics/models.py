@@ -1,41 +1,81 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import enum
 from datetime import datetime, timezone
 from typing import Any
+
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, JSON, String, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from backend.app.shared.database.base import Base
 
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-@dataclass(slots=True)
-class BehaviouralSampleRecord:
-    user_id: str
-    session_id: str
-    action_type: str
-    avg_key_interval_ms: float | None
-    avg_touch_duration_ms: float | None
-    typing_speed_cps: float | None
-    tap_pressure_avg: float | None
-    tap_pressure_std: float | None
-    error_count: int | None
-    correction_count: int | None
-    hesitation_time_ms: float | None
-    swipe_speed_avg: float | None
-    touch_precision_score: float | None
-    device_orientation_changes: int | None
-    session_duration_ms: float | None
-    platform: str | None
-    payload_version: str | None
-    created_at: datetime = field(default_factory=utcnow)
+class BehaviouralActionType(str, enum.Enum):
+    LOGIN = "LOGIN"
+    PIN_ENTRY = "PIN_ENTRY"
+    TRANSACTION_CONFIRMATION = "TRANSACTION_CONFIRMATION"
+    PASSWORD_CHANGE = "PASSWORD_CHANGE"
+    BENEFICIARY_ADD = "BENEFICIARY_ADD"
 
 
-@dataclass(slots=True)
-class BehaviouralProfileRecord:
-    user_id: str
-    samples: list[BehaviouralSampleRecord] = field(default_factory=list)
-    baseline: dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=utcnow)
-    updated_at: datetime = field(default_factory=utcnow)
+class BehaviouralProfile(Base):
+    __tablename__ = "behavioural_profiles"
+    __table_args__ = (UniqueConstraint("user_id", name="uq_behavioural_profiles_user_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    samples_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    baseline_data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+    samples: Mapped[list["BehaviouralSample"]] = relationship(
+        back_populates="profile",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    @property
+    def baseline(self) -> dict[str, Any]:
+        return self.baseline_data or {}
+
+    @baseline.setter
+    def baseline(self, value: dict[str, Any]) -> None:
+        self.baseline_data = value or {}
+
+
+class BehaviouralSample(Base):
+    __tablename__ = "behavioural_samples"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    profile_id: Mapped[int] = mapped_column(ForeignKey("behavioural_profiles.id"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    session_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    avg_key_interval_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_touch_duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    typing_speed_cps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tap_pressure_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tap_pressure_std: Mapped[float | None] = mapped_column(Float, nullable=True)
+    error_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    correction_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    hesitation_time_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    swipe_speed_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    touch_precision_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    device_orientation_changes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    session_duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    platform: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    payload_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    profile: Mapped[BehaviouralProfile] = relationship(back_populates="samples")
 

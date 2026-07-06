@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from fastapi import HTTPException, status
+from sqlalchemy.orm import Session
 
 from backend.app.modules.behavioural_biometrics import repository
 from backend.app.modules.behavioural_biometrics.ml import BehaviouralBiometricsMLPredictor
-from backend.app.modules.behavioural_biometrics.models import BehaviouralProfileRecord
+from backend.app.modules.behavioural_biometrics.models import BehaviouralProfile
 from backend.app.modules.behavioural_biometrics.rules import evaluate_behavioural_risk
 from backend.app.modules.behavioural_biometrics.schemas import (
     BehaviouralEnrollRequest,
@@ -19,24 +20,21 @@ class BehaviouralBiometricsService:
         self.predictor = predictor or BehaviouralBiometricsMLPredictor()
 
     @staticmethod
-    def _profile_to_response(profile: BehaviouralProfileRecord) -> BehaviouralProfileResponse:
+    def _profile_to_response(profile: BehaviouralProfile) -> BehaviouralProfileResponse:
         return BehaviouralProfileResponse(
             user_id=profile.user_id,
-            samples_count=len(profile.samples),
+            samples_count=profile.samples_count,
             baseline=profile.baseline,
             created_at=profile.created_at,
             updated_at=profile.updated_at,
         )
 
-    def enroll_behavioural_sample(self, payload: BehaviouralEnrollRequest) -> BehaviouralProfileResponse:
-        repository.enroll_sample(payload)
-        profile = repository.get_user_profile(payload.user_id)
-        if profile is None:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="profile enrollment failed")
+    def enroll_behavioural_sample(self, db: Session, payload: BehaviouralEnrollRequest) -> BehaviouralProfileResponse:
+        profile = repository.enroll_sample(db, payload)
         return self._profile_to_response(profile)
 
-    def analyze_behavioural_sample(self, payload: BehaviouralSampleInput) -> BehaviouralRiskResponse:
-        profile = repository.get_user_profile(payload.user_id)
+    def analyze_behavioural_sample(self, db: Session, payload: BehaviouralSampleInput) -> BehaviouralRiskResponse:
+        profile = repository.get_user_profile(db, payload.user_id)
         evaluation = evaluate_behavioural_risk(payload, profile)
         return BehaviouralRiskResponse(
             module_name="behavioural_biometrics",
@@ -51,8 +49,8 @@ class BehaviouralBiometricsService:
             adapter_mode=evaluation["adapter_mode"],
         )
 
-    def get_behavioural_profile(self, user_id: str) -> BehaviouralProfileResponse:
-        profile = repository.get_user_profile(user_id)
+    def get_behavioural_profile(self, db: Session, user_id: str) -> BehaviouralProfileResponse:
+        profile = repository.get_user_profile(db, user_id)
         if profile is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="behavioural profile not found")
         return self._profile_to_response(profile)

@@ -1,6 +1,6 @@
 # Behavioural Biometrics
 
-Phase 1 backend module for Novaris AI.
+Phase 2 backend module for Novaris AI.
 
 This module evaluates whether an application session looks like the user's usual interaction pattern.
 It does not identify a person with certainty and it does not inspect the device. It only looks for
@@ -44,9 +44,31 @@ Collected signals are mock payload fields only:
 - real fingerprint data
 - personal contacts
 
+## Persistent profile storage
+
+The behavioural profile is stored durably in SQLite through SQLAlchemy.
+
+Stored data:
+
+- user profile metadata
+- sample count
+- behavioural baseline aggregates
+- per-session behavioural samples
+
+Not stored:
+
+- real PIN
+- password
+- exact typed content
+- conversations
+- facial biometric data
+- personal contacts
+
+SQLite is acceptable for development and local testing. PostgreSQL with Alembic migrations is the expected production path later.
+
 ## Operating mode
 
-- in-memory repository
+- durable SQLite repository
 - rule-based statistical scoring
 - no real ML model yet
 - no mobile SDK yet
@@ -66,9 +88,7 @@ Collected signals are mock payload fields only:
 
 ## Future phases
 
-- durable persistence
-- SQLAlchemy repository
 - SDK mobile integration
 - stronger validation
 - ML predictor
-
+- PostgreSQL + Alembic

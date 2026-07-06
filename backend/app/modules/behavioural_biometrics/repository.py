@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from statistics import fmean, pstdev
-from threading import RLock
 from typing import Any
 
-from backend.app.modules.behavioural_biometrics.models import BehaviouralProfileRecord, BehaviouralSampleRecord, utcnow
-from backend.app.modules.behavioural_biometrics.schemas import BehaviouralSampleInput
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session, selectinload
 
-_LOCK = RLock()
-_PROFILES: dict[str, BehaviouralProfileRecord] = {}
+from backend.app.modules.behavioural_biometrics.models import BehaviouralProfile, BehaviouralSample, utcnow
+from backend.app.modules.behavioural_biometrics.schemas import BehaviouralSampleInput
 
 _NUMERIC_FIELDS = (
     "avg_key_interval_ms",
@@ -26,20 +25,11 @@ _NUMERIC_FIELDS = (
 )
 
 
-def reset_repository() -> None:
-    with _LOCK:
-        _PROFILES.clear()
-
-
-def _to_record(sample: BehaviouralSampleInput) -> BehaviouralSampleRecord:
-    return BehaviouralSampleRecord(**sample.model_dump(mode="json"))
-
-
 def _safe_std(values: list[float]) -> float:
     return pstdev(values) if len(values) > 1 else 0.0
 
 
-def _compute_baseline(samples: list[BehaviouralSampleRecord]) -> dict[str, Any]:
+def _compute_baseline(samples: list[BehaviouralSample]) -> dict[str, Any]:
     baseline: dict[str, Any] = {"samples_count": len(samples), "metrics": {}}
     for field in _NUMERIC_FIELDS:
         values = [float(getattr(sample, field)) for sample in samples if getattr(sample, field) is not None]
@@ -54,33 +44,72 @@ def _compute_baseline(samples: list[BehaviouralSampleRecord]) -> dict[str, Any]:
     return baseline
 
 
-def enroll_sample(sample: BehaviouralSampleInput) -> BehaviouralProfileRecord:
-    record = _to_record(sample)
-    with _LOCK:
-        profile = _PROFILES.get(sample.user_id)
-        if profile is None:
-            profile = BehaviouralProfileRecord(user_id=sample.user_id)
-            _PROFILES[sample.user_id] = profile
-        profile.samples.append(record)
-        profile.baseline = _compute_baseline(profile.samples)
-        profile.updated_at = utcnow()
-        if len(profile.samples) == 1:
-            profile.created_at = profile.updated_at
-        return profile
+def _to_sample(sample: BehaviouralSampleInput) -> dict[str, Any]:
+    payload = sample.model_dump(mode="json")
+    payload.pop("user_id", None)
+    payload.pop("session_id", None)
+    return payload
 
 
-def get_user_profile(user_id: str) -> BehaviouralProfileRecord | None:
-    with _LOCK:
-        return _PROFILES.get(user_id)
+def _load_profile(db: Session, user_id: str) -> BehaviouralProfile | None:
+    stmt = (
+        select(BehaviouralProfile)
+        .options(selectinload(BehaviouralProfile.samples))
+        .where(BehaviouralProfile.user_id == user_id)
+    )
+    return db.scalar(stmt)
 
 
-def get_user_samples(user_id: str) -> list[BehaviouralSampleRecord]:
-    with _LOCK:
-        profile = _PROFILES.get(user_id)
-        return list(profile.samples) if profile else []
+def reset_repository(db: Session) -> None:
+    db.execute(delete(BehaviouralSample))
+    db.execute(delete(BehaviouralProfile))
+    db.commit()
 
 
-def count_user_samples(user_id: str) -> int:
-    with _LOCK:
-        profile = _PROFILES.get(user_id)
-        return len(profile.samples) if profile else 0
+def enroll_sample(db: Session, sample: BehaviouralSampleInput) -> BehaviouralProfile:
+    profile = _load_profile(db, sample.user_id)
+    now = utcnow()
+    if profile is None:
+        profile = BehaviouralProfile(
+            user_id=sample.user_id,
+            samples_count=0,
+            baseline_data={},
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(profile)
+        db.flush()
+
+    sample_row = BehaviouralSample(
+        profile=profile,
+        user_id=sample.user_id,
+        session_id=sample.session_id,
+        **_to_sample(sample),
+    )
+    db.add(sample_row)
+    db.flush()
+
+    samples = get_user_samples(db, sample.user_id)
+    profile.samples_count = len(samples)
+    profile.baseline = _compute_baseline(samples)
+    profile.updated_at = now
+    if profile.created_at is None:
+        profile.created_at = now
+
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+def get_user_profile(db: Session, user_id: str) -> BehaviouralProfile | None:
+    return _load_profile(db, user_id)
+
+
+def get_user_samples(db: Session, user_id: str) -> list[BehaviouralSample]:
+    stmt = select(BehaviouralSample).where(BehaviouralSample.user_id == user_id).order_by(BehaviouralSample.created_at.asc(), BehaviouralSample.id.asc())
+    return list(db.scalars(stmt).all())
+
+
+def count_user_samples(db: Session, user_id: str) -> int:
+    profile = _load_profile(db, user_id)
+    return profile.samples_count if profile else 0
