@@ -24,6 +24,7 @@ class Customer(Base):
     kyc_level: Mapped[str] = mapped_column(String(20), default="basic")
     customer_type: Mapped[str] = mapped_column(String(20), default="individual")
     operator: Mapped[str] = mapped_column(String(30), default="Autre / inconnu")
+    country: Mapped[str] = mapped_column(String(40), default="Côte d'Ivoire")
     home_city: Mapped[str] = mapped_column(String(60), default="Abidjan")
     account_created_at: Mapped[datetime] = mapped_column(DateTime())
 
@@ -47,6 +48,15 @@ class Transaction(Base):
     device_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     sender_city: Mapped[str | None] = mapped_column(String(60), nullable=True)
     note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    batch_id: Mapped[str | None] = mapped_column(String(40), index=True, nullable=True)
+    agent_id: Mapped[str | None] = mapped_column(String(20), index=True, nullable=True)
+    # Solde du portefeuille de l'émetteur avant/après la transaction, si le système
+    # appelant (Clapay) les transmet — signal fortement prédictif documenté par les
+    # travaux de référence sur la simulation Mobile Money (PaySim, MoMTSim) : une
+    # transaction qui vide le compte à zéro est un indice fort de fraude/compte compromis.
+    # Optionnel : Novaris ne gère pas les soldes, il ne fait que les recevoir s'ils existent.
+    balance_before_sender: Mapped[float | None] = mapped_column(Float, nullable=True)
+    balance_after_sender: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(), index=True, default=_utcnow)
 
     sender: Mapped["Customer"] = relationship(back_populates="transactions")
@@ -54,7 +64,10 @@ class Transaction(Base):
         back_populates="transaction", uselist=False, cascade="all, delete-orphan"
     )
 
-    __table_args__ = (Index("ix_sender_created_at", "sender_phone", "created_at"),)
+    __table_args__ = (
+        Index("ix_sender_created_at", "sender_phone", "created_at"),
+        Index("ix_agent_created_at", "agent_id", "created_at"),
+    )
 
 
 class TransactionAnalysis(Base):

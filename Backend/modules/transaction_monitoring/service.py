@@ -7,6 +7,7 @@ from modules.transaction_monitoring import ml, rules
 from modules.transaction_monitoring.feature_engineering import compute_context_features
 from modules.transaction_monitoring.repository import TransactionRepository
 from modules.transaction_monitoring.schemas import TransactionAnalysisOut, TransactionIn, RuleFlagOut
+from shared.utils.phone import country_from_phone, currency_for_country
 
 
 class TransactionMonitoringService:
@@ -24,6 +25,18 @@ class TransactionMonitoringService:
 
         sender = self.repo.get_or_create_customer(payload.sender_phone, now=timestamp)
         prior_history = self.repo.get_sender_history(payload.sender_phone, before=timestamp)
+        incoming_history = self.repo.get_receiver_history(payload.sender_phone, before=timestamp)
+
+        receiver_country = country_from_phone(payload.receiver_phone)
+        if payload.currency is None:
+            payload.currency = currency_for_country(sender.country)
+
+        agent_tx_count_last_1h = 0
+        agent_distinct_senders_last_1h = 0
+        if payload.agent_id:
+            agent_tx_count_last_1h, agent_distinct_senders_last_1h = self.repo.get_agent_recent_activity(
+                payload.agent_id, before=timestamp
+            )
 
         features = compute_context_features(
             amount=payload.amount,
@@ -31,9 +44,18 @@ class TransactionMonitoringService:
             timestamp=timestamp,
             transaction_type=payload.transaction_type,
             channel=payload.channel,
+            currency=payload.currency,
             account_created_at=sender.account_created_at,
             kyc_level=sender.kyc_level,
             prior_history=prior_history,
+            sender_country=sender.country,
+            receiver_country=receiver_country,
+            batch_id=payload.batch_id,
+            incoming_history=incoming_history,
+            device_id=payload.device_id,
+            balance_after_sender=payload.balance_after_sender,
+            agent_tx_count_last_1h=agent_tx_count_last_1h,
+            agent_distinct_senders_last_1h=agent_distinct_senders_last_1h,
         )
 
         rule_results = rules.evaluate_rules(features)
@@ -76,7 +98,11 @@ class TransactionMonitoringService:
             transaction_id=transaction.transaction_id,
             sender_phone=transaction.sender_phone,
             sender_operator=sender.operator,
+            sender_country=sender.country,
             receiver_phone=transaction.receiver_phone,
+            receiver_country=receiver_country,
+            is_cross_border=features.is_cross_border,
+            batch_id=transaction.batch_id,
             amount=transaction.amount,
             currency=transaction.currency,
             transaction_type=transaction.transaction_type,

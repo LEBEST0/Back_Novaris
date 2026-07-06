@@ -11,13 +11,36 @@ class TransactionIn(BaseModel):
     sender_phone: str = Field(examples=["+2250700000001"])
     receiver_phone: str = Field(examples=["+2250700000099"])
     amount: float = Field(gt=0)
-    currency: str = "XOF"
+    currency: str | None = Field(
+        default=None,
+        description="Devise ISO du montant. Si absente, déduite du pays de l'émetteur.",
+    )
     transaction_type: str
     channel: str = "mobile_app"
     timestamp: datetime | None = None
     device_id: str | None = None
     sender_city: str | None = None
     note: str | None = None
+    batch_id: str | None = Field(
+        default=None,
+        description=(
+            "Identifiant d'une opération de paiement de masse (Clapay B2B) : les "
+            "transactions qui partagent le même batch_id sont traitées comme un seul "
+            "envoi groupé déclaré, pas comme des transferts distincts indépendants."
+        ),
+    )
+    agent_id: str | None = Field(
+        default=None,
+        description="Agent Mobile Money ayant traité un dépôt/retrait en espèces (cash-in/cash-out).",
+    )
+    balance_before_sender: float | None = Field(
+        default=None,
+        description="Solde du portefeuille de l'émetteur avant la transaction, si connu du système appelant.",
+    )
+    balance_after_sender: float | None = Field(
+        default=None,
+        description="Solde du portefeuille de l'émetteur après la transaction, si connu du système appelant.",
+    )
 
     @field_validator("transaction_type")
     @classmethod
@@ -44,7 +67,11 @@ class TransactionAnalysisOut(BaseModel):
     transaction_id: str
     sender_phone: str
     sender_operator: str
+    sender_country: str
     receiver_phone: str
+    receiver_country: str | None
+    is_cross_border: bool
+    batch_id: str | None
     amount: float
     currency: str
     transaction_type: str
@@ -69,5 +96,6 @@ class CustomerIn(BaseModel):
     kyc_level: str = "basic"
     customer_type: str = "individual"
     operator: str = "Autre / inconnu"
+    country: str = "Côte d'Ivoire"
     home_city: str = "Abidjan"
     account_created_at: datetime | None = None

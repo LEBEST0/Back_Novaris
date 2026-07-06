@@ -52,7 +52,7 @@ Backend/
 ├── shared/
 │   ├── config/                    # Settings (env), constantes métier
 │   ├── database/                  # Engine SQLAlchemy, session, base déclarative
-│   └── utils/                     # Génération d'ID, scoring générique
+│   └── utils/                     # ID, scoring, téléphonie/pays (18 pays), conversion devise
 ├── modules/
 │   └── transaction_monitoring/    # Seul module implémenté (voir README dédié)
 │       ├── api.py                 # Endpoints REST
@@ -99,13 +99,27 @@ niveau de risque, une décision et les raisons qui l'expliquent.
 - **TransactionAnalysis** : résultat d'analyse (scores règles/ML/final, décision,
   raisons, facteurs SHAP, version du modèle) — constitue la piste d'audit.
 
+### Multi-pays et passerelle de paiement
+
+Clapay opère dans 18 pays avec plusieurs devises et un vrai produit d'interopérabilité
+transfrontalière et de paiement de masse. Conséquences dans le code : montants normalisés en
+équivalent XOF pour le scoring (les seuils gardent le même sens réel en NGN ou GHS), un
+`batch_id` optionnel pour qu'un paiement de masse déclaré (Clapay B2B, N bénéficiaires en une
+opération) ne soit jamais confondu avec un fan-out frauduleux, et une détection de transit
+transfrontalier (reçu d'un pays, renvoyé vers un autre en moins d'une heure — schéma de
+blanchiment par superposition). Détails et résultats vérifiés en direct dans le
+[README du module](modules/transaction_monitoring/README.md#modélisation-multi-pays-et-passerelle-de-paiement).
+
 ### Moteur hybride règles + ML
 
-1. **Règles métier** (`rules.py`, 7 règles) : pic de montant, vélocité anormale,
+1. **Règles métier** (`rules.py`, 13 règles) : pic de montant, vélocité anormale,
    bénéficiaire inconnu pour un montant élevé, activité nocturne, nouveau compte à
-   forte valeur, fractionnement (structuring), distribution vers plusieurs
-   bénéficiaires (fan-out). Chaque règle est déterministe, pondérée et documentée en
-   langage naturel — auditable indépendamment du modèle ML.
+   forte valeur, fractionnement (structuring), distribution vers plusieurs bénéficiaires
+   hors paiement de masse déclaré (fan-out), transit transfrontalier, paiement de masse
+   détourné, changement d'appareil suspect (SIM swap), ingénierie sociale, complicité
+   d'agent (cash-out), solde vidé. Chaque règle est déterministe, pondérée et documentée
+   en langage naturel — auditable indépendamment du modèle ML. Liste complète et
+   justification GSMA/PaySim dans le [README du module](modules/transaction_monitoring/README.md).
 2. **Modèle ML** (`ml.py`) : XGBoost entraîné sur données synthétiques, avec un
    explicateur SHAP qui traduit les 3 facteurs les plus influents en phrases lisibles
    par un analyste.
@@ -142,6 +156,9 @@ Matrice de décision (alignée sur le document produit) :
 // Réponse (extrait)
 {
   "transaction_id": "TXN-6D05ED0FC7A24086",
+  "sender_country": "Côte d'Ivoire",
+  "is_cross_border": false,
+  "batch_id": null,
   "rule_score": 0.0,
   "ml_score": 0.84,
   "final_score": 0.46,
@@ -187,41 +204,43 @@ démarrage du serveur.
 
 ## Résultats du modèle ML
 
-Sur le dataset synthétique (≈1500 clients, ≈503 000 transactions sur **12 mois**, 6
-scénarios de fraude injectés, jeu de test = 20 %) :
+Sur le dataset synthétique (≈1500 clients répartis sur **18 pays**, ≈150 agents, ≈519 000
+transactions sur **12 mois**, 10 scénarios de fraude + 1 scénario centré agent, jeu de
+test = 20 %) :
 
 | Métrique | Valeur |
 |---|---|
-| AUC-ROC | 0.999 |
-| AUC-PR | 0.92 |
-| Recall (seuil 0.5) | 0.97 |
-| Precision (seuil 0.5) | 0.28 |
+| AUC-ROC | 1.000 |
+| AUC-PR | 0.99 |
+| Recall (seuil 0.5) | 0.99 |
+| Precision (seuil 0.5) | 0.60 |
 
-Les variables les plus influentes selon SHAP : type de transaction, bénéficiaire connu/
-inconnu, écart du montant par rapport à l'habitude du client, montant moyen habituel sur
-30 jours, montant, cumul des montants sur 1h. `day_of_month` et `is_payday_window`
-(saisonnalité mensuelle, voir ci-dessous) figurent aussi dans le top 10.
-
-La precision (0.60 → 0.28) a baissé par rapport à une version antérieure sur 60 jours : le
-volume de transactions normales a été multiplié par ~4.5 sur 12 mois pendant que le nombre
-de fraudes injectées restait stable, ce qui fait chuter le taux de fraude de 0.78 % à
-0.18 % — beaucoup plus proche d'un taux réel. C'est un effet statistique attendu à recall
-constant, pas une régression : c'est justement pour ça que la zone `REVIEW` existe, pour
-absorber les faux positifs vers une revue humaine plutôt qu'un blocage automatique.
+Les variables les plus influentes selon SHAP : type de transaction, montant moyen habituel
+du client, bénéficiaire connu/inconnu, écart par rapport à l'habitude, cumul sur 1h, montant
+(équivalent XOF), délai depuis la dernière réception (transit transfrontalier), taille du
+lot de paiement de masse. La precision est passée de 0.28 à 0.60 par rapport à la version
+précédente : les nouveaux signaux (appareil, solde, agent) rendent la fraude nettement plus
+séparable, en plus d'un taux de fraude simulé plus élevé du fait des nouveaux scénarios.
 
 ## Limites connues et prochaines étapes
 
-- **Fenêtre de simulation étendue à 12 mois avec signal de paie** : une première version
-  sur 60 jours ne pouvait capturer aucune saisonnalité mensuelle (ex : pics de retraits en
-  début/fin de mois liés aux salaires). Le dataset simule maintenant cet effet
-  (`day_of_month`, `is_payday_window`) sur un cycle annuel complet. Restent hors périmètre,
-  volontairement : les dates de fêtes (Tabaski, Noël...) et les tendances pluriannuelles
-  (croissance de l'usage Mobile Money, inflation), qui demanderaient soit un calendrier
-  précis non vérifié, soit des données réelles multi-années.
+- **Fenêtre de simulation de 12 mois avec signal de paie** : capture la saisonnalité
+  mensuelle (pics de retraits en début/fin de mois liés aux salaires). Restent hors
+  périmètre, volontairement : les dates de fêtes (Tabaski, Noël...) et les tendances
+  pluriannuelles, qui demanderaient soit un calendrier précis non vérifié, soit des données
+  réelles multi-années.
+- **Conversion de devise approximative** : `shared/utils/currency.py` utilise des ordres de
+  grandeur indicatifs figés dans le code pour normaliser les montants entre pays, pas un
+  taux de change temps réel. Suffisant pour que les seuils de règles restent cohérents entre
+  devises en démo ; une intégration réelle nécessiterait un service de taux à jour.
 - **Séparabilité élevée du dataset synthétique** : les scénarios de fraude injectés restent
   individuellement assez distincts des transactions normales, d'où un AUC-ROC très élevé.
   Avec des données réelles de pilote, un recalibrage des seuils et un backtesting seront
   nécessaires (cf. feuille de route produit, Phase 2 - V1 Pilote).
+- **Soldes simulés, pas réels** : `balance_before_sender`/`balance_after_sender` sont
+  reconstitués par un ledger cohérent rejoué par client (inspiré de PaySim/MoMTSim), pas des
+  soldes réels de portefeuille Clapay. En production, ces champs seraient transmis par le
+  système appelant s'il les connaît ; Novaris ne les invente jamais quand ils sont absents.
 - **Pas de frontend** : ce dépôt est backend uniquement ; le dashboard analyste (React,
   prévu par la feuille de route) n'est pas dans ce périmètre.
 - **Un seul module actif** : les 13 autres modules de la vision Novaris AI restent à l'état
