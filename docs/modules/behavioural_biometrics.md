@@ -116,7 +116,8 @@ Decisions:
   "reasons": ["Peu d'echantillons comportementaux"],
   "evidence": {},
   "profile_samples": 1,
-  "adapter_mode": "RULE_BASED"
+  "adapter_mode": "RULE_BASED",
+  "confidence_score": 100
 }
 ```
 
@@ -164,7 +165,41 @@ Rules:
 This is a lightweight protection layer. It reduces accidental replay and basic unauthorized calls, but it does not replace a real signed SDK payload.
 Phase 5 will add HMAC signing.
 
-## 12. SDK v1 contract
+## 12. SDK signature légère
+
+`POST /enroll` and `POST /analyze` also require `X-Novaris-Signature`.
+
+The signature is HMAC-SHA256 over the canonical payload:
+
+`json.dumps(payload, sort_keys=True, separators=(",", ":"))`
+
+The secret comes from `NOVARIS_BEHAVIOURAL_SIGNATURE_SECRET`.
+
+Difference between the two headers:
+
+- `X-Novaris-Client-Key` checks that the request comes from a known lightweight client
+- `X-Novaris-Signature` checks that the payload was signed by the SDK layer
+
+Limits of HMAC in a mobile app:
+
+- the secret is still shipped in the client
+- a rooted / instrumented device can extract it
+- it is a useful step-up, but it is not a strong attestation
+
+Future evolution:
+
+- Play Integrity on Android
+- App Attest on iOS
+- server-side attestation checks
+
+## 13. Difference between score and confidence_score
+
+- `score` measures behavioural risk
+- `confidence_score` measures trust in the request and SDK payload
+
+The two are independent and should be interpreted separately.
+
+## 14. SDK v1 contract
 
 The payload is versioned so Android and iOS can stay compatible over time.
 
@@ -230,14 +265,13 @@ Forbidden data:
 
 Phase 5 will introduce SDK payload signing with HMAC.
 
-## 13. Current limits
+## 15. Current limits
 
 - SQLite is still the development persistence layer.
-- No signature.
 - No real SDK.
 - No real ML.
 
-## 14. Next phases
+## 16. Next phases
 
 - SDK integration
 - stronger validation

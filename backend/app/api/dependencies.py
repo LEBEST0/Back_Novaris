@@ -6,7 +6,12 @@ import json
 from fastapi import Header, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
-from backend.app.shared.config.settings import get_behavioural_client_key, get_device_client_key, get_device_signature_secret
+from backend.app.shared.config.settings import (
+    get_behavioural_client_key,
+    get_behavioural_signature_secret,
+    get_device_client_key,
+    get_device_signature_secret,
+)
 from backend.app.shared.database.session import SessionLocal
 
 
@@ -68,6 +73,45 @@ async def require_device_signature(
     canonical = json.dumps(parsed, separators=(",", ":"), sort_keys=True, ensure_ascii=False).encode("utf-8")
     expected_signature = hmac.new(
         get_device_signature_secret().encode("utf-8"),
+        canonical,
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(x_novaris_signature, expected_signature):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="invalid X-Novaris-Signature",
+        )
+
+
+async def require_behavioural_signature(
+    request: Request,
+    x_novaris_signature: str | None = Header(default=None, alias="X-Novaris-Signature"),
+) -> None:
+    if not x_novaris_signature:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="missing X-Novaris-Signature",
+        )
+
+    body = await request.body()
+    if not body:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="empty request body",
+        )
+
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid JSON payload",
+        ) from exc
+
+    canonical = json.dumps(parsed, separators=(",", ":"), sort_keys=True, ensure_ascii=False).encode("utf-8")
+    expected_signature = hmac.new(
+        get_behavioural_signature_secret().encode("utf-8"),
         canonical,
         hashlib.sha256,
     ).hexdigest()

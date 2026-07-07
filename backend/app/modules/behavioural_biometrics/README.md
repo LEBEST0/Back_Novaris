@@ -93,6 +93,33 @@ Rules:
 
 This is a lightweight protection layer only. It is useful for local and staged deployments, but it is not a substitute for a real SDK signature. Phase 5 will add HMAC signing.
 
+## SDK signature légère
+
+`POST /enroll` and `POST /analyze` now require `X-Novaris-Signature` in addition to the client key.
+
+The signature is computed with HMAC-SHA256 over the canonical JSON payload using
+`NOVARIS_BEHAVIOURAL_SIGNATURE_SECRET`.
+
+Difference between the two headers:
+
+- `X-Novaris-Client-Key` checks that the caller knows the lightweight client key
+- `X-Novaris-Signature` checks that the payload was signed with the SDK secret
+
+Limitations:
+
+- the signature is still embedded in a mobile app
+- a mobile secret can be extracted by a determined attacker
+- this is stronger than a plain key, but weaker than attestation
+
+Phase 5 will later evolve toward Play Integrity on Android and App Attest on iOS.
+
+## Difference between score and confidence_score
+
+- `score` measures behavioural risk
+- `confidence_score` measures trust in the SDK request itself
+
+Both are returned independently and must not be mixed.
+
 ## SDK v1 contract
 
 The SDK payload is versioned to keep Android and iOS integrations stable.

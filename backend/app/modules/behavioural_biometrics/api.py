@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from backend.app.api.dependencies import get_db, require_behavioural_client_key
+from backend.app.api.dependencies import get_db, require_behavioural_client_key, require_behavioural_signature
 from backend.app.modules.behavioural_biometrics.schemas import (
     BehaviouralEnrollRequest,
     BehaviouralProfileResponse,
@@ -22,6 +22,7 @@ service = BehaviouralBiometricsService()
 def enroll_behavioural_sample(
     payload: BehaviouralEnrollRequest,
     db: Session = Depends(get_db),
+    _signature: None = Depends(require_behavioural_signature),
 ) -> BehaviouralProfileResponse:
     return service.enroll_behavioural_sample(db, payload)
 
@@ -30,6 +31,7 @@ def enroll_behavioural_sample(
 def analyze_behavioural_sample(
     payload: BehaviouralSampleInput,
     db: Session = Depends(get_db),
+    _signature: None = Depends(require_behavioural_signature),
 ) -> BehaviouralRiskResponse:
     return service.analyze_behavioural_sample(db, payload)
 

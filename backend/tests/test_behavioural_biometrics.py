@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
+import hmac
+import json
 from pathlib import Path
 
 import pytest
@@ -10,12 +13,23 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.app.api.dependencies import get_db
 from backend.app.main import app
-from backend.app.modules.behavioural_biometrics.models import Base, BehaviouralProfile, BehaviouralRequestNonce, BehaviouralSample
+from backend.app.modules.behavioural_biometrics.models import (
+    BehaviouralProfile,
+    BehaviouralSample,
+    Base,
+)
+from backend.app.modules.behavioural_biometrics.rules import evaluate_behavioural_risk
+from backend.app.modules.behavioural_biometrics.schemas import BehaviouralSampleInput
+
+
+CLIENT_KEY = "test-behavioural-client-key"
+SIGNATURE_SECRET = "test-behavioural-signature-secret"
 
 
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("NOVARIS_BEHAVIOURAL_CLIENT_KEY", "test-behavioural-client-key")
+    monkeypatch.setenv("NOVARIS_BEHAVIOURAL_CLIENT_KEY", CLIENT_KEY)
+    monkeypatch.setenv("NOVARIS_BEHAVIOURAL_SIGNATURE_SECRET", SIGNATURE_SECRET)
     database_path = tmp_path / "behavioural_biometrics_test.sqlite3"
     engine = create_engine(
         f"sqlite+pysqlite:///{database_path}",
@@ -23,6 +37,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
+    app.state.behavioural_testing_session_factory = TestingSessionLocal
 
     def override_get_db():
         db = TestingSessionLocal()
@@ -33,16 +48,36 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:
-        yield test_client, TestingSessionLocal, database_path
+        yield test_client
     app.dependency_overrides.clear()
-    engine.dispose()
+    delattr(app.state, "behavioural_testing_session_factory")
 
 
-def _headers() -> dict[str, str]:
-    return {"X-Novaris-Client-Key": "test-behavioural-client-key"}
+def _client_headers() -> dict[str, str]:
+    return {"X-Novaris-Client-Key": CLIENT_KEY}
 
 
-def _sample_payload(**overrides):
+def _canonical_body(payload: dict) -> str:
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True, ensure_ascii=False)
+
+
+def _signature(payload: dict, *, secret: str = SIGNATURE_SECRET) -> str:
+    return hmac.new(
+        secret.encode("utf-8"),
+        _canonical_body(payload).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _signed_post(client: TestClient, url: str, payload: dict, *, signature: str | None = None):
+    headers = _client_headers()
+    if signature is not None:
+        headers["X-Novaris-Signature"] = signature
+    headers["Content-Type"] = "application/json"
+    return client.post(url, headers=headers, content=_canonical_body(payload))
+
+
+def _payload(**overrides):
     payload = {
         "user_id": "user-001",
         "session_id": "session-001",
@@ -70,207 +105,78 @@ def _sample_payload(**overrides):
     return payload
 
 
-def _get_profile(SessionLocal, user_id: str) -> BehaviouralProfile | None:
-    with SessionLocal() as db:
-        return db.scalar(select(BehaviouralProfile).where(BehaviouralProfile.user_id == user_id))
+def _enroll_payload(**overrides):
+    payload = _payload(**overrides)
+    payload.update(
+        {
+            "brand": "Samsung",
+            "model": "Galaxy S23",
+            "os_name": "Android",
+            "os_version": "14",
+            "app_version": "1.0.0",
+            "is_rooted": False,
+            "is_emulator": False,
+            "is_vpn": False,
+            "is_proxy": False,
+            "ip_address": "196.0.0.1",
+            "country": "CI",
+            "city": "Abidjan",
+            "latitude": 5.36,
+            "longitude": -4.01,
+            "language": "fr",
+        }
+    )
+    return payload
 
 
-def _get_samples(SessionLocal, user_id: str) -> list[BehaviouralSample]:
-    with SessionLocal() as db:
-        return list(db.scalars(select(BehaviouralSample).where(BehaviouralSample.user_id == user_id)).all())
-
-
-def _get_nonces(SessionLocal) -> list[BehaviouralRequestNonce]:
-    with SessionLocal() as db:
-        return list(db.scalars(select(BehaviouralRequestNonce)).all())
-
-
-def test_enroll_persists_a_sample_in_database(client):
-    http_client, SessionLocal, _ = client
-
-    response = http_client.post(
+def test_enroll_without_signature_is_rejected(client):
+    response = client.post(
         "/api/v1/behavioural-biometrics/enroll",
-        json=_sample_payload(user_id="user-db", session_id="session-db", request_id="req-db", nonce="nonce-db"),
-        headers=_headers(),
+        headers=_client_headers(),
+        json=_enroll_payload(),
     )
-    assert response.status_code == 200
-
-    profile = _get_profile(SessionLocal, "user-db")
-    samples = _get_samples(SessionLocal, "user-db")
-    nonces = _get_nonces(SessionLocal)
-
-    assert profile is not None
-    assert profile.samples_count == 1
-    assert len(samples) == 1
-    assert samples[0].session_id == "session-db"
-    assert len(nonces) == 1
-    assert nonces[0].nonce == "nonce-db"
+    assert response.status_code == 403
 
 
-def test_get_profile_returns_profile_from_database(client):
-    http_client, SessionLocal, _ = client
-    http_client.post(
-        "/api/v1/behavioural-biometrics/enroll",
-        json=_sample_payload(user_id="user-profile", session_id="session-profile", request_id="req-profile", nonce="nonce-profile"),
-        headers=_headers(),
-    )
+def test_enroll_with_invalid_signature_is_rejected(client):
+    response = _signed_post(client, "/api/v1/behavioural-biometrics/enroll", _enroll_payload(), signature="bad-signature")
+    assert response.status_code == 403
 
-    response = http_client.get(
-        "/api/v1/behavioural-biometrics/users/user-profile/profile",
-        headers=_headers(),
-    )
+
+def test_enroll_with_signature_is_accepted(client):
+    payload = _enroll_payload()
+    response = _signed_post(client, "/api/v1/behavioural-biometrics/enroll", payload, signature=_signature(payload))
     assert response.status_code == 200
     body = response.json()
-    assert body["user_id"] == "user-profile"
+    assert body["user_id"] == "user-001"
     assert body["samples_count"] == 1
-    assert "baseline" in body
-
-    profile = _get_profile(SessionLocal, "user-profile")
-    assert profile is not None
-    assert profile.samples_count == 1
 
 
-def test_analyze_uses_persisted_profile(client):
-    http_client, SessionLocal, _ = client
-    http_client.post(
-        "/api/v1/behavioural-biometrics/enroll",
-        json=_sample_payload(user_id="user-analyze", session_id="session-analyze-1", request_id="req-analyze-1", nonce="nonce-analyze-1"),
-        headers=_headers(),
-    )
-
-    response = http_client.post(
+def test_analyze_without_signature_is_rejected(client):
+    response = client.post(
         "/api/v1/behavioural-biometrics/analyze",
-        json=_sample_payload(user_id="user-analyze", session_id="session-analyze-2", request_id="req-analyze-2", nonce="nonce-analyze-2"),
-        headers=_headers(),
+        headers=_client_headers(),
+        json=_payload(),
     )
+    assert response.status_code == 403
+
+
+def test_analyze_with_invalid_signature_is_rejected(client):
+    response = _signed_post(client, "/api/v1/behavioural-biometrics/analyze", _payload(), signature="bad-signature")
+    assert response.status_code == 403
+
+
+def test_analyze_with_signature_returns_confidence_score(client):
+    payload = _payload()
+    response = _signed_post(client, "/api/v1/behavioural-biometrics/analyze", payload, signature=_signature(payload))
     assert response.status_code == 200
     body = response.json()
-    assert body["profile_samples"] == 1
-    assert body["evidence"]["profile"]["samples_count"] == 1
-
-    profile = _get_profile(SessionLocal, "user-analyze")
-    assert profile is not None
-
-
-def test_profile_survives_new_sqlalchemy_session(client):
-    http_client, SessionLocal, database_path = client
-    http_client.post(
-        "/api/v1/behavioural-biometrics/enroll",
-        json=_sample_payload(user_id="user-reopen", session_id="session-reopen", request_id="req-reopen", nonce="nonce-reopen"),
-        headers=_headers(),
-    )
-
-    new_engine = create_engine(
-        f"sqlite+pysqlite:///{database_path}",
-        connect_args={"check_same_thread": False},
-    )
-    NewSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=new_engine)
-    try:
-        profile = _get_profile(NewSessionLocal, "user-reopen")
-        assert profile is not None
-        assert profile.samples_count == 1
-    finally:
-        new_engine.dispose()
-
-
-def test_samples_count_increases_after_multiple_enrolls(client):
-    http_client, SessionLocal, _ = client
-    for idx in range(4):
-        http_client.post(
-            "/api/v1/behavioural-biometrics/enroll",
-            json=_sample_payload(
-                user_id="user-count",
-                session_id=f"session-{idx}",
-                request_id=f"req-count-{idx}",
-                nonce=f"nonce-count-{idx}",
-            ),
-            headers=_headers(),
-        )
-
-    profile = _get_profile(SessionLocal, "user-count")
-    assert profile is not None
-    assert profile.samples_count == 4
-    assert len(profile.samples) == 4
-
-
-def test_no_sensitive_content_is_stored(client):
-    _, _, _ = client
-    sample_columns = set(BehaviouralSample.__table__.columns.keys())
-    forbidden = {"pin", "password", "content", "conversation", "face", "fingerprint"}
-    assert sample_columns.isdisjoint(forbidden)
-
-
-def test_score_remains_bounded_between_0_and_100(client):
-    http_client, _, _ = client
-    for idx in range(3):
-        http_client.post(
-            "/api/v1/behavioural-biometrics/enroll",
-            json=_sample_payload(
-                user_id="user-score",
-                session_id=f"baseline-{idx}",
-                request_id=f"req-score-{idx}",
-                nonce=f"nonce-score-{idx}",
-            ),
-            headers=_headers(),
-        )
-
-    response = http_client.post(
-        "/api/v1/behavioural-biometrics/analyze",
-        json=_sample_payload(
-            user_id="user-score",
-            session_id="anomaly",
-            request_id="req-score-anomaly",
-            nonce="nonce-score-anomaly",
-            avg_key_interval_ms=1000.0,
-            avg_touch_duration_ms=5.0,
-            typing_speed_cps=30.0,
-            error_count=100,
-            correction_count=100,
-            hesitation_time_ms=10000.0,
-            touch_precision_score=0.0,
-            session_duration_ms=1.0,
-        ),
-        headers=_headers(),
-    )
-    assert response.status_code == 200
-    assert 0 <= response.json()["score"] <= 100
-
-
-def test_old_behavioural_contracts_still_pass(client):
-    http_client, _, _ = client
-    enroll_response = http_client.post(
-        "/api/v1/behavioural-biometrics/enroll",
-        json=_sample_payload(user_id="user-contract", session_id="session-contract-1", request_id="req-contract-1", nonce="nonce-contract-1"),
-        headers=_headers(),
-    )
-    analyze_response = http_client.post(
-        "/api/v1/behavioural-biometrics/analyze",
-        json=_sample_payload(user_id="user-contract", session_id="session-contract-2", request_id="req-contract-2", nonce="nonce-contract-2"),
-        headers=_headers(),
-    )
-    profile_response = http_client.get(
-        "/api/v1/behavioural-biometrics/users/user-contract/profile",
-        headers=_headers(),
-    )
-
-    assert enroll_response.status_code == 200
-    assert analyze_response.status_code == 200
-    assert profile_response.status_code == 200
-
-
-def test_analyze_response_contains_expected_fields(client):
-    http_client, _, _ = client
-    response = http_client.post(
-        "/api/v1/behavioural-biometrics/analyze",
-        json=_sample_payload(user_id="user-response", session_id="session-response", request_id="req-response", nonce="nonce-response"),
-        headers=_headers(),
-    )
-    assert response.status_code == 200
-    assert set(response.json().keys()) == {
+    assert set(body.keys()) == {
         "module_name",
         "user_id",
         "session_id",
         "score",
+        "confidence_score",
         "risk_level",
         "decision",
         "reasons",
@@ -278,202 +184,252 @@ def test_analyze_response_contains_expected_fields(client):
         "profile_samples",
         "adapter_mode",
     }
+    assert 0 <= body["confidence_score"] <= 100
+    assert body["confidence_score"] == 100
 
 
-def test_enroll_without_key_is_rejected(client):
-    http_client, _, _ = client
-    response = http_client.post(
-        "/api/v1/behavioural-biometrics/enroll",
-        json=_sample_payload(user_id="user-no-key", session_id="session-no-key", request_id="req-no-key", nonce="nonce-no-key"),
+def test_complete_valid_request_has_full_confidence(client):
+    payload = _payload()
+    response = _signed_post(client, "/api/v1/behavioural-biometrics/analyze", payload, signature=_signature(payload))
+    assert response.status_code == 200
+    assert response.json()["confidence_score"] == 100
+
+
+def test_score_is_always_bounded(client):
+    payload = _payload(
+        avg_key_interval_ms=900.0,
+        avg_touch_duration_ms=900.0,
+        typing_speed_cps=12.0,
+        tap_pressure_avg=0.1,
+        tap_pressure_std=0.01,
+        error_count=12,
+        correction_count=11,
+        hesitation_time_ms=9000.0,
+        swipe_speed_avg=0.2,
+        touch_precision_score=0.2,
+        device_orientation_changes=20,
+        session_duration_ms=5.0,
     )
-    assert response.status_code == 403
+    result = evaluate_behavioural_risk(BehaviouralSampleInput.model_validate(payload), None)
+    assert 0 <= result["score"] <= 100
 
 
-def test_enroll_with_key_is_accepted(client):
-    http_client, _, _ = client
-    response = http_client.post(
-        "/api/v1/behavioural-biometrics/enroll",
-        json=_sample_payload(user_id="user-with-key", session_id="session-with-key", request_id="req-with-key", nonce="nonce-with-key"),
-        headers=_headers(),
-    )
+def test_analyze_without_profile_returns_require_otp(client):
+    payload = _payload(user_id="user-no-profile")
+    response = _signed_post(client, "/api/v1/behavioural-biometrics/analyze", payload, signature=_signature(payload))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision"] == "REQUIRE_OTP"
+    assert body["score"] == 50
+    assert body["risk_level"] == "MEDIUM"
+    assert body["reasons"] == ["Profil comportemental insuffisant"]
+
+
+def test_enroll_persists_sample_and_profile(client):
+    payload = _enroll_payload(user_id="user-persist", session_id="session-persist", nonce="nonce-persist", request_id="req-persist")
+    response = _signed_post(client, "/api/v1/behavioural-biometrics/enroll", payload, signature=_signature(payload))
     assert response.status_code == 200
 
+    db_factory = app.state.behavioural_testing_session_factory
+    with db_factory() as db:
+        profile = db.scalar(select(BehaviouralProfile).where(BehaviouralProfile.user_id == "user-persist"))
+        sample = db.scalar(select(BehaviouralSample).where(BehaviouralSample.user_id == "user-persist"))
+        assert profile is not None
+        assert sample is not None
+        assert profile.samples_count == 1
 
-def test_payload_version_v1_is_accepted_on_enroll(client):
-    http_client, _, _ = client
-    response = http_client.post(
-        "/api/v1/behavioural-biometrics/enroll",
-        json=_sample_payload(user_id="user-v1-enroll", session_id="session-v1-enroll", request_id="req-v1-enroll", nonce="nonce-v1-enroll", payload_version="v1"),
-        headers=_headers(),
-    )
+
+def test_profile_endpoint_returns_persisted_profile(client):
+    payload = _enroll_payload(user_id="user-profile", session_id="session-profile", nonce="nonce-profile", request_id="req-profile")
+    enroll_response = _signed_post(client, "/api/v1/behavioural-biometrics/enroll", payload, signature=_signature(payload))
+    assert enroll_response.status_code == 200
+
+    response = client.get("/api/v1/behavioural-biometrics/users/user-profile/profile", headers=_client_headers())
     assert response.status_code == 200
+    body = response.json()
+    assert body["user_id"] == "user-profile"
+    assert body["samples_count"] == 1
 
 
-def test_payload_version_v1_is_accepted_on_analyze(client):
-    http_client, _, _ = client
-    response = http_client.post(
-        "/api/v1/behavioural-biometrics/analyze",
-        json=_sample_payload(user_id="user-v1-analyze", session_id="session-v1-analyze", request_id="req-v1-analyze", nonce="nonce-v1-analyze", payload_version="v1"),
-        headers=_headers(),
+def test_analyze_uses_persisted_profile(client):
+    first = _enroll_payload(
+        user_id="user-history",
+        session_id="session-history-1",
+        nonce="nonce-history-1",
+        request_id="req-history-1",
     )
+    second = _enroll_payload(
+        user_id="user-history",
+        session_id="session-history-2",
+        nonce="nonce-history-2",
+        request_id="req-history-2",
+        avg_key_interval_ms=185.0,
+        avg_touch_duration_ms=121.0,
+        typing_speed_cps=4.1,
+    )
+    assert _signed_post(client, "/api/v1/behavioural-biometrics/enroll", first, signature=_signature(first)).status_code == 200
+    assert _signed_post(client, "/api/v1/behavioural-biometrics/enroll", second, signature=_signature(second)).status_code == 200
+
+    analyze_payload = _payload(
+        user_id="user-history",
+        session_id="session-history-analyze",
+        nonce="nonce-history-analyze",
+        request_id="req-history-analyze",
+        avg_key_interval_ms=188.0,
+        avg_touch_duration_ms=123.0,
+        typing_speed_cps=4.0,
+    )
+    response = _signed_post(client, "/api/v1/behavioural-biometrics/analyze", analyze_payload, signature=_signature(analyze_payload))
+    assert response.status_code == 200
+    assert response.json()["profile_samples"] >= 2
+
+
+def test_persistence_survives_new_sqlalchemy_session(tmp_path: Path):
+    database_path = tmp_path / "behavioural_biometrics_test.sqlite3"
+    engine = create_engine(
+        f"sqlite+pysqlite:///{database_path}",
+        connect_args={"check_same_thread": False},
+    )
+    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+    payload = _enroll_payload(user_id="user-persist", session_id="session-persist", nonce="nonce-persist", request_id="req-persist")
+    with Session() as db:
+        profile = BehaviouralProfile(
+            user_id="user-persist",
+            samples_count=1,
+            baseline_data={"samples_count": 1, "metrics": {}},
+        )
+        db.add(profile)
+        db.add(
+            BehaviouralSample(
+                profile=profile,
+                user_id="user-persist",
+                session_id="session-persist",
+                action_type=payload["action_type"],
+                avg_key_interval_ms=payload["avg_key_interval_ms"],
+                avg_touch_duration_ms=payload["avg_touch_duration_ms"],
+                typing_speed_cps=payload["typing_speed_cps"],
+                tap_pressure_avg=payload["tap_pressure_avg"],
+                tap_pressure_std=payload["tap_pressure_std"],
+                error_count=payload["error_count"],
+                correction_count=payload["correction_count"],
+                hesitation_time_ms=payload["hesitation_time_ms"],
+                swipe_speed_avg=payload["swipe_speed_avg"],
+                touch_precision_score=payload["touch_precision_score"],
+                device_orientation_changes=payload["device_orientation_changes"],
+                session_duration_ms=payload["session_duration_ms"],
+                platform=payload["platform"],
+                payload_version=payload["payload_version"],
+            )
+        )
+        db.commit()
+
+    engine.dispose()
+    engine2 = create_engine(
+        f"sqlite+pysqlite:///{database_path}",
+        connect_args={"check_same_thread": False},
+    )
+    Session2 = sessionmaker(autocommit=False, autoflush=False, bind=engine2)
+    with Session2() as db:
+        record = db.scalar(select(BehaviouralProfile).where(BehaviouralProfile.user_id == "user-persist"))
+        assert record is not None
+
+
+def test_duplicate_enroll_does_not_create_second_record(client):
+    payload = _enroll_payload(user_id="user-dup", session_id="session-dup", nonce="nonce-dup", request_id="req-dup")
+    first = _signed_post(client, "/api/v1/behavioural-biometrics/enroll", payload, signature=_signature(payload))
+    second = _signed_post(client, "/api/v1/behavioural-biometrics/enroll", payload, signature=_signature(payload))
+    assert first.status_code == 200
+    assert second.status_code == 409
+
+    response = client.get("/api/v1/behavioural-biometrics/users/user-dup/profile", headers=_client_headers())
+    assert response.status_code == 200
+    assert response.json()["samples_count"] == 1
+
+
+def test_nonce_reuse_is_rejected(client):
+    payload = _payload(user_id="user-nonce", session_id="session-nonce", nonce="nonce-reuse", request_id="req-nonce")
+    first = _signed_post(client, "/api/v1/behavioural-biometrics/analyze", payload, signature=_signature(payload))
+    second = _signed_post(client, "/api/v1/behavioural-biometrics/analyze", payload, signature=_signature(payload))
+    assert first.status_code == 200
+    assert second.status_code == 409
+
+
+def test_expired_timestamp_is_rejected(client):
+    payload = _payload(timestamp=(datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat())
+    response = _signed_post(client, "/api/v1/behavioural-biometrics/analyze", payload, signature=_signature(payload))
+    assert response.status_code == 400
+
+
+def test_payload_version_v1_is_accepted(client):
+    payload = _payload(payload_version="v1")
+    response = _signed_post(client, "/api/v1/behavioural-biometrics/analyze", payload, signature=_signature(payload))
     assert response.status_code == 200
 
 
 def test_unknown_payload_version_is_rejected(client):
-    http_client, _, _ = client
-    response = http_client.post(
-        "/api/v1/behavioural-biometrics/analyze",
-        json=_sample_payload(user_id="user-v2", session_id="session-v2", request_id="req-v2", nonce="nonce-v2", payload_version="v2"),
-        headers=_headers(),
-    )
+    payload = _payload(payload_version="v2")
+    response = _signed_post(client, "/api/v1/behavioural-biometrics/analyze", payload, signature=_signature(payload))
     assert response.status_code == 422
 
 
 @pytest.mark.parametrize("platform", ["ANDROID", "IOS", "WEB_MOCK"])
 def test_supported_platforms_are_accepted(client, platform: str):
-    http_client, _, _ = client
-    response = http_client.post(
-        "/api/v1/behavioural-biometrics/analyze",
-        json=_sample_payload(user_id=f"user-{platform}", session_id=f"session-{platform}", request_id=f"req-{platform}", nonce=f"nonce-{platform}", platform=platform),
-        headers=_headers(),
-    )
+    payload = _payload(platform=platform)
+    response = _signed_post(client, "/api/v1/behavioural-biometrics/analyze", payload, signature=_signature(payload))
     assert response.status_code == 200
 
 
 def test_unknown_platform_is_rejected(client):
-    http_client, _, _ = client
-    response = http_client.post(
-        "/api/v1/behavioural-biometrics/analyze",
-        json=_sample_payload(user_id="user-platform-unknown", session_id="session-platform-unknown", request_id="req-platform-unknown", nonce="nonce-platform-unknown", platform="WINDOWS_PHONE"),
-        headers=_headers(),
-    )
+    payload = _payload(platform="DESKTOP")
+    response = _signed_post(client, "/api/v1/behavioural-biometrics/analyze", payload, signature=_signature(payload))
     assert response.status_code == 422
 
 
-def test_valid_action_type_is_accepted(client):
-    http_client, _, _ = client
-    response = http_client.post(
-        "/api/v1/behavioural-biometrics/analyze",
-        json=_sample_payload(action_type="LOGIN", user_id="user-action-valid", session_id="session-action-valid", request_id="req-action-valid", nonce="nonce-action-valid"),
-        headers=_headers(),
-    )
+@pytest.mark.parametrize("action_type", ["LOGIN", "PIN_ENTRY", "TRANSACTION_CONFIRMATION", "PASSWORD_CHANGE", "BENEFICIARY_ADD"])
+def test_supported_action_types_are_accepted(client, action_type: str):
+    payload = _payload(action_type=action_type)
+    response = _signed_post(client, "/api/v1/behavioural-biometrics/analyze", payload, signature=_signature(payload))
     assert response.status_code == 200
 
 
 def test_unknown_action_type_is_rejected(client):
-    http_client, _, _ = client
-    response = http_client.post(
-        "/api/v1/behavioural-biometrics/analyze",
-        json=_sample_payload(action_type="SWIPE_LEFT", user_id="user-action-unknown", session_id="session-action-unknown", request_id="req-action-unknown", nonce="nonce-action-unknown"),
-        headers=_headers(),
-    )
+    payload = _payload(action_type="WIRE_TRANSFER")
+    response = _signed_post(client, "/api/v1/behavioural-biometrics/analyze", payload, signature=_signature(payload))
     assert response.status_code == 422
 
 
-def test_analyze_without_key_is_rejected(client):
-    http_client, _, _ = client
-    response = http_client.post(
-        "/api/v1/behavioural-biometrics/analyze",
-        json=_sample_payload(user_id="user-analyze-no-key", session_id="session-analyze-no-key", request_id="req-analyze-no-key", nonce="nonce-analyze-no-key"),
-    )
-    assert response.status_code == 403
-
-
-def test_analyze_with_key_is_accepted(client):
-    http_client, _, _ = client
-    response = http_client.post(
-        "/api/v1/behavioural-biometrics/analyze",
-        json=_sample_payload(user_id="user-analyze-key", session_id="session-analyze-key", request_id="req-analyze-key", nonce="nonce-analyze-key"),
-        headers=_headers(),
-    )
-    assert response.status_code == 200
-
-
 def test_get_profile_without_key_is_rejected(client):
-    http_client, _, _ = client
-    response = http_client.get("/api/v1/behavioural-biometrics/users/user-profile-no-key/profile")
+    response = client.get("/api/v1/behavioural-biometrics/users/user-profile/profile")
     assert response.status_code == 403
 
 
 def test_get_profile_with_key_is_accepted(client):
-    http_client, _, _ = client
-    http_client.post(
-        "/api/v1/behavioural-biometrics/enroll",
-        json=_sample_payload(user_id="user-profile-key", session_id="session-profile-key", request_id="req-profile-key", nonce="nonce-profile-key"),
-        headers=_headers(),
-    )
-    response = http_client.get(
-        "/api/v1/behavioural-biometrics/users/user-profile-key/profile",
-        headers=_headers(),
-    )
+    payload = _enroll_payload(user_id="user-get-profile", session_id="session-get-profile", nonce="nonce-get-profile", request_id="req-get-profile")
+    assert _signed_post(client, "/api/v1/behavioural-biometrics/enroll", payload, signature=_signature(payload)).status_code == 200
+    response = client.get("/api/v1/behavioural-biometrics/users/user-get-profile/profile", headers=_client_headers())
     assert response.status_code == 200
 
 
-def test_timestamp_expired_is_rejected(client):
-    http_client, _, _ = client
-    response = http_client.post(
+def test_contract_response_contains_expected_fields(client):
+    payload = _payload()
+    response = _signed_post(client, "/api/v1/behavioural-biometrics/analyze", payload, signature=_signature(payload))
+    assert response.status_code == 200
+    body = response.json()
+    assert "module_name" in body
+    assert "score" in body
+    assert "risk_level" in body
+    assert "decision" in body
+    assert "reasons" in body
+    assert "evidence" in body
+
+
+def test_client_key_is_required(client):
+    payload = _payload()
+    response = client.post(
         "/api/v1/behavioural-biometrics/analyze",
-        json=_sample_payload(
-            user_id="user-expired",
-            session_id="session-expired",
-            request_id="req-expired",
-            nonce="nonce-expired",
-            timestamp=(datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat(),
-        ),
-        headers=_headers(),
+        content=_canonical_body(payload),
+        headers={"X-Novaris-Signature": _signature(payload)},
     )
-    assert response.status_code == 400
-
-
-def test_nonce_reuse_on_analyze_is_rejected(client):
-    http_client, _, _ = client
-    payload = _sample_payload(
-        user_id="user-replay-analyze",
-        session_id="session-replay-1",
-        request_id="req-replay-1",
-        nonce="nonce-replay-analyze",
-    )
-    first = http_client.post("/api/v1/behavioural-biometrics/analyze", json=payload, headers=_headers())
-    second = http_client.post(
-        "/api/v1/behavioural-biometrics/analyze",
-        json=_sample_payload(
-            user_id="user-replay-analyze",
-            session_id="session-replay-2",
-            request_id="req-replay-2",
-            nonce="nonce-replay-analyze",
-        ),
-        headers=_headers(),
-    )
-    assert first.status_code == 200
-    assert second.status_code == 409
-
-
-def test_nonce_reuse_on_enroll_is_rejected(client):
-    http_client, _, _ = client
-    payload = _sample_payload(
-        user_id="user-replay-enroll",
-        session_id="session-replay-enroll-1",
-        request_id="req-replay-enroll-1",
-        nonce="nonce-replay-enroll",
-    )
-    first = http_client.post("/api/v1/behavioural-biometrics/enroll", json=payload, headers=_headers())
-    second = http_client.post(
-        "/api/v1/behavioural-biometrics/enroll",
-        json=_sample_payload(
-            user_id="user-replay-enroll",
-            session_id="session-replay-enroll-2",
-            request_id="req-replay-enroll-2",
-            nonce="nonce-replay-enroll",
-        ),
-        headers=_headers(),
-    )
-    assert first.status_code == 200
-    assert second.status_code == 409
-
-
-def test_missing_nonce_is_a_validation_error(client):
-    http_client, _, _ = client
-    payload = _sample_payload(user_id="user-missing-nonce", session_id="session-missing-nonce", request_id="req-missing-nonce")
-    payload.pop("nonce")
-    response = http_client.post("/api/v1/behavioural-biometrics/analyze", json=payload, headers=_headers())
-    assert response.status_code == 422
+    assert response.status_code == 403

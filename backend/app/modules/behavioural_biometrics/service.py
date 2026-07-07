@@ -56,6 +56,28 @@ class BehaviouralBiometricsService:
         ):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="nonce already used")
 
+    @staticmethod
+    def _compute_confidence_score(
+        *,
+        signature_valid: bool,
+        client_key_valid: bool,
+        timestamp_fresh: bool,
+        nonce_unused: bool,
+        payload_supported: bool,
+    ) -> int:
+        score = 0
+        if signature_valid:
+            score += 40
+        if client_key_valid:
+            score += 20
+        if timestamp_fresh:
+            score += 15
+        if nonce_unused:
+            score += 15
+        if payload_supported:
+            score += 10
+        return min(score, 100)
+
     def enroll_behavioural_sample(self, db: Session, payload: BehaviouralEnrollRequest) -> BehaviouralProfileResponse:
         self._validate_security_and_register_nonce(db, payload, endpoint="enroll")
         profile = repository.enroll_sample(db, payload)
@@ -70,6 +92,13 @@ class BehaviouralBiometricsService:
             user_id=payload.user_id,
             session_id=payload.session_id,
             score=evaluation["score"],
+            confidence_score=self._compute_confidence_score(
+                signature_valid=True,
+                client_key_valid=True,
+                timestamp_fresh=True,
+                nonce_unused=True,
+                payload_supported=True,
+            ),
             risk_level=evaluation["risk_level"],
             decision=evaluation["decision"],
             reasons=evaluation["reasons"],

@@ -4,6 +4,7 @@ import os
 
 from backend.app.shared.config.constants import (
     BEHAVIOURAL_CLIENT_KEY_ENV_VAR,
+    BEHAVIOURAL_SIGNATURE_SECRET_ENV_VAR,
     DEVICE_CLIENT_KEY_ENV_VAR,
     DEVICE_SIGNATURE_SECRET_ENV_VAR,
 )
@@ -28,3 +29,10 @@ def get_behavioural_client_key() -> str:
     if not key:
         raise RuntimeError(f"{BEHAVIOURAL_CLIENT_KEY_ENV_VAR} is not configured")
     return key
+
+
+def get_behavioural_signature_secret() -> str:
+    secret = os.getenv(BEHAVIOURAL_SIGNATURE_SECRET_ENV_VAR)
+    if not secret:
+        raise RuntimeError(f"{BEHAVIOURAL_SIGNATURE_SECRET_ENV_VAR} is not configured")
+    return secret
