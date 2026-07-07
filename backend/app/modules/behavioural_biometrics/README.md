@@ -1,4 +1,4 @@
-# Behavioural Biometrics
+﻿# Behavioural Biometrics
 
 Phase 2 backend module for Novaris AI.
 
@@ -119,6 +119,36 @@ Phase 5 will later evolve toward Play Integrity on Android and App Attest on iOS
 - `confidence_score` measures trust in the SDK request itself
 
 Both are returned independently and must not be mixed.
+
+## SDK Collector mock
+
+The repository already includes a mock collector example so mobile teams can see how the metrics are produced before a real SDK exists.
+
+Why it exists:
+
+- to document the measurement flow now
+- to keep the backend contract testable
+- to separate collection logic from risk scoring
+
+Mock collector flow:
+
+- `startSession()` / `endSession()` measure total session duration
+- `startAction()` / `endAction()` measure the duration of a logical user action
+- `recordTouchDown()` / `recordTouchUp()` measure touch duration and capture pressure
+- `recordKeyPress()` stores timestamps used to compute key intervals
+- `recordError()` and `recordCorrection()` increment counters used by the risk model
+
+The mock collector only produces statistics. It never records:
+
+- the real PIN
+- the password
+- the exact typed content
+- conversations
+- facial biometric data
+- real fingerprint data
+- personal contacts
+
+The payload is signed with the lightweight HMAC layer described above, using the canonical JSON payload and `NOVARIS_BEHAVIOURAL_SIGNATURE_SECRET`.
 
 ## SDK v1 contract
 

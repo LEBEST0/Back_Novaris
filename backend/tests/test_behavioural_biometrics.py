@@ -13,6 +13,10 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.app.api.dependencies import get_db
 from backend.app.main import app
+from backend.app.modules.behavioural_biometrics.mock_sdk_collector import (
+    MockBehaviouralSDKCollector,
+    build_signed_request,
+)
 from backend.app.modules.behavioural_biometrics.models import (
     BehaviouralProfile,
     BehaviouralSample,
@@ -433,3 +437,103 @@ def test_client_key_is_required(client):
         headers={"X-Novaris-Signature": _signature(payload)},
     )
     assert response.status_code == 403
+
+
+def test_start_and_end_session_produce_session_duration():
+    collector = MockBehaviouralSDKCollector()
+    collector.start_session(timestamp_ms=1_000.0)
+    duration = collector.end_session(timestamp_ms=4_250.0)
+    payload = collector.build_payload("user-session", "session-session", "LOGIN")
+    assert duration == pytest.approx(3250.0)
+    assert payload["session_duration_ms"] == pytest.approx(3250.0)
+
+
+def test_start_and_end_action_produce_action_duration():
+    collector = MockBehaviouralSDKCollector()
+    collector.start_action("LOGIN", timestamp_ms=2_000.0)
+    duration = collector.end_action("LOGIN", timestamp_ms=2_420.0)
+    assert duration == pytest.approx(420.0)
+
+
+def test_record_key_press_computes_average_interval():
+    collector = MockBehaviouralSDKCollector()
+    collector.record_key_press(timestamp_ms=1_000.0)
+    collector.record_key_press(timestamp_ms=1_250.0)
+    collector.record_key_press(timestamp_ms=1_600.0)
+    payload = collector.build_payload("user-key", "session-key", "LOGIN")
+    assert payload["avg_key_interval_ms"] == pytest.approx(300.0)
+
+
+def test_record_touch_down_and_up_computes_average_touch_duration():
+    collector = MockBehaviouralSDKCollector()
+    collector.record_touch_down(timestamp_ms=1_000.0, pressure=0.4)
+    collector.record_touch_up(timestamp_ms=1_220.0, pressure=0.5)
+    collector.record_touch_down(timestamp_ms=1_400.0, pressure=0.45)
+    collector.record_touch_up(timestamp_ms=1_700.0, pressure=0.55)
+    payload = collector.build_payload("user-touch", "session-touch", "LOGIN")
+    assert payload["avg_touch_duration_ms"] == pytest.approx(260.0)
+
+
+def test_record_error_and_correction_increment_counters():
+    collector = MockBehaviouralSDKCollector()
+    collector.record_error()
+    collector.record_error()
+    collector.record_correction()
+    payload = collector.build_payload("user-counts", "session-counts", "LOGIN")
+    assert payload["error_count"] == 2
+    assert payload["correction_count"] == 1
+
+
+def test_build_payload_is_compatible_with_api_schema():
+    collector = MockBehaviouralSDKCollector()
+    collector.start_session(timestamp_ms=1_000.0)
+    collector.record_key_press(timestamp_ms=1_100.0)
+    collector.record_key_press(timestamp_ms=1_260.0)
+    collector.record_touch_down(timestamp_ms=1_300.0, pressure=0.42)
+    collector.record_touch_up(timestamp_ms=1_520.0, pressure=0.5)
+    payload = collector.build_payload("user-schema", "session-schema", "LOGIN")
+
+    parsed = BehaviouralSampleInput.model_validate(payload)
+    assert parsed.user_id == "user-schema"
+    assert parsed.payload_version == "v1"
+    assert parsed.platform == "WEB_MOCK"
+
+
+def test_build_signed_request_produces_api_accepted_signature(client):
+    signed = build_signed_request(
+        user_id="user-signed-request",
+        session_id="session-signed-request",
+        action_type="LOGIN",
+        client_key=CLIENT_KEY,
+        signature_secret=SIGNATURE_SECRET,
+    )
+    response = client.post(
+        "/api/v1/behavioural-biometrics/analyze",
+        headers=signed["headers"],
+        json=signed["payload"],
+    )
+    assert response.status_code == 200
+    assert response.json()["confidence_score"] == 100
+
+
+def test_payload_from_mock_collector_is_accepted_by_analyze(client):
+    collector = MockBehaviouralSDKCollector()
+    collector.start_session(timestamp_ms=1_000.0)
+    collector.start_action("LOGIN", timestamp_ms=1_100.0)
+    collector.record_key_press(timestamp_ms=1_200.0)
+    collector.record_key_press(timestamp_ms=1_450.0)
+    collector.record_touch_down(timestamp_ms=1_500.0, pressure=0.4)
+    collector.record_touch_up(timestamp_ms=1_760.0, pressure=0.5)
+    collector.record_error()
+    payload = collector.build_payload("user-mock-sdk", "session-mock-sdk", "LOGIN")
+
+    response = client.post(
+        "/api/v1/behavioural-biometrics/analyze",
+        headers={
+            "X-Novaris-Client-Key": CLIENT_KEY,
+            "X-Novaris-Signature": _signature(payload),
+            "Content-Type": "application/json",
+        },
+        content=_canonical_body(payload),
+    )
+    assert response.status_code == 200

@@ -1,4 +1,4 @@
-# Behavioural Biometrics
+﻿# Behavioural Biometrics
 
 ## 1. Role of the module
 
@@ -199,7 +199,37 @@ Future evolution:
 
 The two are independent and should be interpreted separately.
 
-## 14. SDK v1 contract
+## 14. SDK Collector mock
+
+The repository includes a mock SDK collector to document how behavioural metrics are produced on the mobile side before the real Android and iOS SDKs exist.
+
+Why it exists:
+
+- to show the collection flow now
+- to keep the backend contract testable
+- to separate collection from scoring
+
+Main functions:
+
+- `startSession()` / `endSession()` measure total session duration
+- `startAction()` / `endAction()` measure a logical user action
+- `recordTouchDown()` / `recordTouchUp()` measure touch duration and pressure
+- `recordKeyPress()` stores timestamps used to compute key intervals
+- `recordError()` and `recordCorrection()` update counters
+
+The mock collector only produces statistics. It never records:
+
+- the real PIN
+- the password
+- the exact typed content
+- conversations
+- facial biometric data
+- real fingerprint data
+- personal contacts
+
+The payload is signed with the lightweight HMAC layer using the canonical JSON payload and `NOVARIS_BEHAVIOURAL_SIGNATURE_SECRET`.
+
+## 15. SDK v1 contract
 
 The payload is versioned so Android and iOS can stay compatible over time.
 
