@@ -164,14 +164,80 @@ Rules:
 This is a lightweight protection layer. It reduces accidental replay and basic unauthorized calls, but it does not replace a real signed SDK payload.
 Phase 5 will add HMAC signing.
 
-## 12. Current limits
+## 12. SDK v1 contract
+
+The payload is versioned so Android and iOS can stay compatible over time.
+
+Required fields:
+
+- `user_id`
+- `session_id`
+- `action_type`
+- `request_id`
+- `timestamp`
+- `nonce`
+- `sdk_version`
+- `payload_version`
+- `platform`
+
+Supported platforms:
+
+- `ANDROID`
+- `IOS`
+- `WEB_MOCK`
+
+Supported payload version:
+
+- `v1`
+
+Supported action types:
+
+- `LOGIN`
+- `PIN_ENTRY`
+- `TRANSACTION_CONFIRMATION`
+- `PASSWORD_CHANGE`
+- `BENEFICIARY_ADD`
+
+Behavioural metrics in contract v1:
+
+- `avg_key_interval_ms`
+- `avg_touch_duration_ms`
+- `typing_speed_cps`
+- `tap_pressure_avg`
+- `tap_pressure_std`
+- `error_count`
+- `correction_count`
+- `hesitation_time_ms`
+- `swipe_speed_avg`
+- `touch_precision_score`
+- `device_orientation_changes`
+- `session_duration_ms`
+
+Optional fields:
+
+- the behavioural metric fields when the SDK cannot compute them
+- `language` when the client wants to send localization context later
+
+Forbidden data:
+
+- real PIN
+- password
+- exact typed content
+- conversations
+- facial biometric data
+- real fingerprint data
+- personal contacts
+
+Phase 5 will introduce SDK payload signing with HMAC.
+
+## 13. Current limits
 
 - SQLite is still the development persistence layer.
 - No signature.
 - No real SDK.
 - No real ML.
 
-## 13. Next phases
+## 14. Next phases
 
 - SDK integration
 - stronger validation

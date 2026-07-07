@@ -50,6 +50,9 @@ def _sample_payload(**overrides):
         "request_id": "req-001",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "nonce": "nonce-001",
+        "sdk_version": "1.0.0",
+        "payload_version": "v1",
+        "platform": "ANDROID",
         "avg_key_interval_ms": 180.0,
         "avg_touch_duration_ms": 120.0,
         "typing_speed_cps": 4.2,
@@ -62,8 +65,6 @@ def _sample_payload(**overrides):
         "touch_precision_score": 0.91,
         "device_orientation_changes": 2,
         "session_duration_ms": 42000.0,
-        "platform": "ANDROID",
-        "payload_version": "v1",
     }
     payload.update(overrides)
     return payload
@@ -298,6 +299,77 @@ def test_enroll_with_key_is_accepted(client):
     assert response.status_code == 200
 
 
+def test_payload_version_v1_is_accepted_on_enroll(client):
+    http_client, _, _ = client
+    response = http_client.post(
+        "/api/v1/behavioural-biometrics/enroll",
+        json=_sample_payload(user_id="user-v1-enroll", session_id="session-v1-enroll", request_id="req-v1-enroll", nonce="nonce-v1-enroll", payload_version="v1"),
+        headers=_headers(),
+    )
+    assert response.status_code == 200
+
+
+def test_payload_version_v1_is_accepted_on_analyze(client):
+    http_client, _, _ = client
+    response = http_client.post(
+        "/api/v1/behavioural-biometrics/analyze",
+        json=_sample_payload(user_id="user-v1-analyze", session_id="session-v1-analyze", request_id="req-v1-analyze", nonce="nonce-v1-analyze", payload_version="v1"),
+        headers=_headers(),
+    )
+    assert response.status_code == 200
+
+
+def test_unknown_payload_version_is_rejected(client):
+    http_client, _, _ = client
+    response = http_client.post(
+        "/api/v1/behavioural-biometrics/analyze",
+        json=_sample_payload(user_id="user-v2", session_id="session-v2", request_id="req-v2", nonce="nonce-v2", payload_version="v2"),
+        headers=_headers(),
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("platform", ["ANDROID", "IOS", "WEB_MOCK"])
+def test_supported_platforms_are_accepted(client, platform: str):
+    http_client, _, _ = client
+    response = http_client.post(
+        "/api/v1/behavioural-biometrics/analyze",
+        json=_sample_payload(user_id=f"user-{platform}", session_id=f"session-{platform}", request_id=f"req-{platform}", nonce=f"nonce-{platform}", platform=platform),
+        headers=_headers(),
+    )
+    assert response.status_code == 200
+
+
+def test_unknown_platform_is_rejected(client):
+    http_client, _, _ = client
+    response = http_client.post(
+        "/api/v1/behavioural-biometrics/analyze",
+        json=_sample_payload(user_id="user-platform-unknown", session_id="session-platform-unknown", request_id="req-platform-unknown", nonce="nonce-platform-unknown", platform="WINDOWS_PHONE"),
+        headers=_headers(),
+    )
+    assert response.status_code == 422
+
+
+def test_valid_action_type_is_accepted(client):
+    http_client, _, _ = client
+    response = http_client.post(
+        "/api/v1/behavioural-biometrics/analyze",
+        json=_sample_payload(action_type="LOGIN", user_id="user-action-valid", session_id="session-action-valid", request_id="req-action-valid", nonce="nonce-action-valid"),
+        headers=_headers(),
+    )
+    assert response.status_code == 200
+
+
+def test_unknown_action_type_is_rejected(client):
+    http_client, _, _ = client
+    response = http_client.post(
+        "/api/v1/behavioural-biometrics/analyze",
+        json=_sample_payload(action_type="SWIPE_LEFT", user_id="user-action-unknown", session_id="session-action-unknown", request_id="req-action-unknown", nonce="nonce-action-unknown"),
+        headers=_headers(),
+    )
+    assert response.status_code == 422
+
+
 def test_analyze_without_key_is_rejected(client):
     http_client, _, _ = client
     response = http_client.post(
@@ -405,4 +477,3 @@ def test_missing_nonce_is_a_validation_error(client):
     payload.pop("nonce")
     response = http_client.post("/api/v1/behavioural-biometrics/analyze", json=payload, headers=_headers())
     assert response.status_code == 422
-

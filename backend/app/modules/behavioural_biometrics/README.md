@@ -93,6 +93,71 @@ Rules:
 
 This is a lightweight protection layer only. It is useful for local and staged deployments, but it is not a substitute for a real SDK signature. Phase 5 will add HMAC signing.
 
+## SDK v1 contract
+
+The SDK payload is versioned to keep Android and iOS integrations stable.
+
+Required fields:
+
+- `user_id`
+- `session_id`
+- `action_type`
+- `request_id`
+- `timestamp`
+- `nonce`
+- `sdk_version`
+- `payload_version`
+- `platform`
+
+Supported platforms:
+
+- `ANDROID`
+- `IOS`
+- `WEB_MOCK`
+
+Supported payload version:
+
+- `v1`
+
+Supported action types:
+
+- `LOGIN`
+- `PIN_ENTRY`
+- `TRANSACTION_CONFIRMATION`
+- `PASSWORD_CHANGE`
+- `BENEFICIARY_ADD`
+
+Behavioural metrics carried by the contract v1:
+
+- `avg_key_interval_ms`
+- `avg_touch_duration_ms`
+- `typing_speed_cps`
+- `tap_pressure_avg`
+- `tap_pressure_std`
+- `error_count`
+- `correction_count`
+- `hesitation_time_ms`
+- `swipe_speed_avg`
+- `touch_precision_score`
+- `device_orientation_changes`
+- `session_duration_ms`
+
+Optional fields:
+
+- the behavioural metric fields above when the SDK cannot measure them
+
+Forbidden data:
+
+- real PIN
+- password
+- exact typed content
+- conversations
+- facial biometric data
+- real fingerprint data
+- personal contacts
+
+Phase 5 will add SDK payload signing with HMAC.
+
 ## Decisions
 
 - `ALLOW`

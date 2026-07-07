@@ -52,6 +52,9 @@ def _to_sample(sample: BehaviouralSampleInput) -> dict[str, Any]:
     payload.pop("request_id", None)
     payload.pop("timestamp", None)
     payload.pop("nonce", None)
+    payload.pop("sdk_version", None)
+    payload.pop("payload_version", None)
+    payload.pop("platform", None)
     return payload
 
 

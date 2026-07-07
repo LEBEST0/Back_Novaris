@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -22,6 +22,9 @@ class BehaviouralSampleInput(BaseModel):
     request_id: str
     timestamp: datetime
     nonce: str
+    sdk_version: str
+    payload_version: Literal["v1"]
+    platform: Literal["ANDROID", "IOS", "WEB_MOCK"]
     avg_key_interval_ms: float | None = None
     avg_touch_duration_ms: float | None = None
     typing_speed_cps: float | None = None
@@ -34,8 +37,6 @@ class BehaviouralSampleInput(BaseModel):
     touch_precision_score: float | None = None
     device_orientation_changes: int | None = None
     session_duration_ms: float | None = None
-    platform: str | None = None
-    payload_version: str | None = None
 
     model_config = ConfigDict(extra="ignore")
 
