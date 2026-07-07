@@ -19,6 +19,9 @@ class BehaviouralSampleInput(BaseModel):
     user_id: str
     session_id: str
     action_type: BehaviouralActionType
+    request_id: str
+    timestamp: datetime
+    nonce: str
     avg_key_interval_ms: float | None = None
     avg_touch_duration_ms: float | None = None
     typing_speed_cps: float | None = None

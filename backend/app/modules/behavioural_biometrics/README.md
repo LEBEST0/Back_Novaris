@@ -73,6 +73,26 @@ SQLite is acceptable for development and local testing. PostgreSQL with Alembic 
 - no real ML model yet
 - no mobile SDK yet
 
+## Security API and anti-replay
+
+Requests are protected with `X-Novaris-Client-Key`, backed by the environment variable
+`NOVARIS_BEHAVIOURAL_CLIENT_KEY`.
+
+For `enroll` and `analyze`, the payload also carries:
+
+- `request_id`
+- `timestamp`
+- `nonce`
+
+Rules:
+
+- `timestamp` must stay within a 5-minute window
+- `nonce` is stored and cannot be reused
+- missing `nonce` is rejected by payload validation
+- reused `nonce` returns `409 Conflict`
+
+This is a lightweight protection layer only. It is useful for local and staged deployments, but it is not a substitute for a real SDK signature. Phase 5 will add HMAC signing.
+
 ## Decisions
 
 - `ALLOW`

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -13,6 +15,7 @@ from backend.app.modules.behavioural_biometrics.schemas import (
     BehaviouralRiskResponse,
     BehaviouralSampleInput,
 )
+from backend.app.shared.config.constants import SECURITY_TIMESTAMP_WINDOW_SECONDS
 
 
 class BehaviouralBiometricsService:
@@ -29,11 +32,37 @@ class BehaviouralBiometricsService:
             updated_at=profile.updated_at,
         )
 
+    @staticmethod
+    def _normalize_timestamp(timestamp: datetime) -> datetime:
+        if timestamp.tzinfo is None:
+            return timestamp.replace(tzinfo=timezone.utc)
+        return timestamp.astimezone(timezone.utc)
+
+    def _validate_security_and_register_nonce(self, db: Session, payload: BehaviouralSampleInput, *, endpoint: str) -> None:
+        request_timestamp = self._normalize_timestamp(payload.timestamp)
+        now = datetime.now(timezone.utc)
+        if abs((now - request_timestamp).total_seconds()) > SECURITY_TIMESTAMP_WINDOW_SECONDS:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="timestamp outside allowed window")
+
+        if repository.is_nonce_used(db, payload.nonce):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="nonce already used")
+
+        if not repository.register_nonce(
+            db,
+            nonce=payload.nonce,
+            request_id=payload.request_id,
+            user_id=payload.user_id,
+            endpoint=endpoint,
+        ):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="nonce already used")
+
     def enroll_behavioural_sample(self, db: Session, payload: BehaviouralEnrollRequest) -> BehaviouralProfileResponse:
+        self._validate_security_and_register_nonce(db, payload, endpoint="enroll")
         profile = repository.enroll_sample(db, payload)
         return self._profile_to_response(profile)
 
     def analyze_behavioural_sample(self, db: Session, payload: BehaviouralSampleInput) -> BehaviouralRiskResponse:
+        self._validate_security_and_register_nonce(db, payload, endpoint="analyze")
         profile = repository.get_user_profile(db, payload.user_id)
         evaluation = evaluate_behavioural_risk(payload, profile)
         return BehaviouralRiskResponse(
@@ -54,4 +83,3 @@ class BehaviouralBiometricsService:
         if profile is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="behavioural profile not found")
         return self._profile_to_response(profile)
-

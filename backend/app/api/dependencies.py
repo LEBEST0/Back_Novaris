@@ -6,7 +6,7 @@ import json
 from fastapi import Header, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
-from backend.app.shared.config.settings import get_device_client_key, get_device_signature_secret
+from backend.app.shared.config.settings import get_behavioural_client_key, get_device_client_key, get_device_signature_secret
 from backend.app.shared.database.session import SessionLocal
 
 
@@ -22,6 +22,17 @@ def require_device_client_key(
     x_novaris_client_key: str | None = Header(default=None, alias="X-Novaris-Client-Key"),
 ) -> None:
     expected_key = get_device_client_key()
+    if not x_novaris_client_key or x_novaris_client_key != expected_key:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="invalid or missing X-Novaris-Client-Key",
+        )
+
+
+def require_behavioural_client_key(
+    x_novaris_client_key: str | None = Header(default=None, alias="X-Novaris-Client-Key"),
+) -> None:
+    expected_key = get_behavioural_client_key()
     if not x_novaris_client_key or x_novaris_client_key != expected_key:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

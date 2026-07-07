@@ -4,9 +4,10 @@ from statistics import fmean, pstdev
 from typing import Any
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from backend.app.modules.behavioural_biometrics.models import BehaviouralProfile, BehaviouralSample, utcnow
+from backend.app.modules.behavioural_biometrics.models import BehaviouralProfile, BehaviouralRequestNonce, BehaviouralSample, utcnow
 from backend.app.modules.behavioural_biometrics.schemas import BehaviouralSampleInput
 
 _NUMERIC_FIELDS = (
@@ -48,6 +49,9 @@ def _to_sample(sample: BehaviouralSampleInput) -> dict[str, Any]:
     payload = sample.model_dump(mode="json")
     payload.pop("user_id", None)
     payload.pop("session_id", None)
+    payload.pop("request_id", None)
+    payload.pop("timestamp", None)
+    payload.pop("nonce", None)
     return payload
 
 
@@ -63,6 +67,7 @@ def _load_profile(db: Session, user_id: str) -> BehaviouralProfile | None:
 def reset_repository(db: Session) -> None:
     db.execute(delete(BehaviouralSample))
     db.execute(delete(BehaviouralProfile))
+    db.execute(delete(BehaviouralRequestNonce))
     db.commit()
 
 
@@ -113,3 +118,25 @@ def get_user_samples(db: Session, user_id: str) -> list[BehaviouralSample]:
 def count_user_samples(db: Session, user_id: str) -> int:
     profile = _load_profile(db, user_id)
     return profile.samples_count if profile else 0
+
+
+def is_nonce_used(db: Session, nonce: str) -> bool:
+    stmt = select(BehaviouralRequestNonce.id).where(BehaviouralRequestNonce.nonce == nonce)
+    return db.scalar(stmt) is not None
+
+
+def register_nonce(db: Session, *, nonce: str, request_id: str, user_id: str, endpoint: str) -> bool:
+    record = BehaviouralRequestNonce(
+        nonce=nonce,
+        request_id=request_id,
+        user_id=user_id,
+        endpoint=endpoint,
+        created_at=utcnow(),
+    )
+    db.add(record)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return False
+    return True

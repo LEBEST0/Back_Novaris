@@ -142,15 +142,36 @@ Not stored:
 
 SQLite is the development database for this phase. PostgreSQL plus Alembic migrations should be used for production.
 
-## 11. Current limits
+## 11. Security API and anti-replay
+
+Requests are protected with `X-Novaris-Client-Key`.
+
+The behaviour-specific key comes from `NOVARIS_BEHAVIOURAL_CLIENT_KEY`.
+
+For `POST /enroll` and `POST /analyze`, the payload also includes:
+
+- `request_id`
+- `timestamp`
+- `nonce`
+
+Rules:
+
+- `timestamp` must stay within a 5-minute window
+- `nonce` is persisted and cannot be reused
+- missing `nonce` is rejected by payload validation
+- replayed `nonce` returns `409 Conflict`
+
+This is a lightweight protection layer. It reduces accidental replay and basic unauthorized calls, but it does not replace a real signed SDK payload.
+Phase 5 will add HMAC signing.
+
+## 12. Current limits
 
 - SQLite is still the development persistence layer.
-- No anti-replay.
 - No signature.
 - No real SDK.
 - No real ML.
 
-## 12. Next phases
+## 13. Next phases
 
 - SDK integration
 - stronger validation

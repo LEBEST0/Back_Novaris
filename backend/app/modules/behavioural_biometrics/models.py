@@ -79,3 +79,14 @@ class BehaviouralSample(Base):
 
     profile: Mapped[BehaviouralProfile] = relationship(back_populates="samples")
 
+
+class BehaviouralRequestNonce(Base):
+    __tablename__ = "behavioural_request_nonces"
+    __table_args__ = (UniqueConstraint("nonce", name="uq_behavioural_request_nonce"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    nonce: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    request_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    endpoint: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)

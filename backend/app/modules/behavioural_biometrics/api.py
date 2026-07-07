@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from backend.app.api.dependencies import get_db
+from backend.app.api.dependencies import get_db, require_behavioural_client_key
 from backend.app.modules.behavioural_biometrics.schemas import (
     BehaviouralEnrollRequest,
     BehaviouralProfileResponse,
@@ -10,7 +10,11 @@ from backend.app.modules.behavioural_biometrics.schemas import (
 )
 from backend.app.modules.behavioural_biometrics.service import BehaviouralBiometricsService
 
-router = APIRouter(prefix="/behavioural-biometrics", tags=["behavioural-biometrics"])
+router = APIRouter(
+    prefix="/behavioural-biometrics",
+    tags=["behavioural-biometrics"],
+    dependencies=[Depends(require_behavioural_client_key)],
+)
 service = BehaviouralBiometricsService()
 
 
@@ -36,4 +40,3 @@ def get_behavioural_profile(
     db: Session = Depends(get_db),
 ) -> BehaviouralProfileResponse:
     return service.get_behavioural_profile(db, user_id)
-
