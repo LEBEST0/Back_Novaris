@@ -16,7 +16,6 @@ export function Beneficiaries({ userId, onNavigate, onSelect }: BeneficiariesPro
   const [showForm, setShowForm] = useState(false);
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
-  const [walletNumber, setWalletNumber] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -38,10 +37,9 @@ export function Beneficiaries({ userId, onNavigate, onSelect }: BeneficiariesPro
     setSaving(true);
     setError(null);
     try {
-      await addBeneficiary(userId, { full_name: fullName, phone, wallet_number: walletNumber });
+      await addBeneficiary(userId, { full_name: fullName, phone });
       setFullName("");
       setPhone("");
-      setWalletNumber("");
       setShowForm(false);
       load();
     } catch (err) {
@@ -76,10 +74,6 @@ export function Beneficiaries({ userId, onNavigate, onSelect }: BeneficiariesPro
           <div className="field">
             <label>Téléphone</label>
             <input value={phone} onChange={(e) => setPhone(e.target.value)} required />
-          </div>
-          <div className="field">
-            <label>Numéro de wallet</label>
-            <input value={walletNumber} onChange={(e) => setWalletNumber(e.target.value)} required />
           </div>
           <button className="btn btn-primary btn-block" type="submit" disabled={saving}>
             {saving ? "Ajout en cours..." : "Ajouter"}

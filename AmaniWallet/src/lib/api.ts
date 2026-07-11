@@ -7,6 +7,7 @@ import type {
   LoginPayload,
   Profile,
   RegisterPayload,
+  TransferConfirmResult,
   TransferPrepareResult,
 } from "../types";
 
@@ -74,7 +75,7 @@ export function fetchBeneficiaries(userId: string): Promise<Beneficiary[]> {
 
 export function addBeneficiary(
   userId: string,
-  payload: { full_name: string; phone: string; wallet_number: string },
+  payload: { full_name: string; phone: string },
 ): Promise<Beneficiary> {
   return request<Beneficiary>(`/api/v1/wallet/beneficiaries?user_id=${encodeURIComponent(userId)}`, {
     method: "POST",
@@ -89,6 +90,18 @@ export function prepareTransfer(payload: {
   reason?: string;
 }): Promise<TransferPrepareResult> {
   return request<TransferPrepareResult>("/api/v1/wallet/transfer/prepare", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function confirmTransfer(payload: {
+  user_id: string;
+  beneficiary_id: string;
+  amount: number;
+  reason?: string;
+}): Promise<TransferConfirmResult> {
+  return request<TransferConfirmResult>("/api/v1/wallet/transfer/confirm", {
     method: "POST",
     body: JSON.stringify(payload),
   });

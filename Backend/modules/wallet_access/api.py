@@ -24,6 +24,8 @@ from modules.wallet_access.schemas import (
     RegisterIn,
     SimCheckIn,
     SimCheckOut,
+    TransferConfirmIn,
+    TransferConfirmOut,
     TransferPrepareIn,
     TransferPrepareOut,
 )
@@ -191,6 +193,19 @@ def add_beneficiary(user_id: str, payload: BeneficiaryIn, db: Session = Depends(
 def prepare_transfer(payload: TransferPrepareIn, db: Session = Depends(get_db)):
     try:
         return WalletAccessService(db).prepare_transfer(payload)
+    except BeneficiaryNotFoundError:
+        raise HTTPException(status_code=404, detail="Bénéficiaire introuvable")
+
+
+@wallet_router.post("/transfer/confirm", response_model=TransferConfirmOut)
+def confirm_transfer(payload: TransferConfirmIn, db: Session = Depends(get_db)):
+    """Fait réellement analyser l'opération par le module Transaction Monitoring —
+    c'est cet appel, et non /transfer/prepare, qui rend la transaction visible dans le
+    graphe/l'investigation de l'Admin."""
+    try:
+        return WalletAccessService(db).confirm_transfer(payload)
+    except UserNotFoundError:
+        raise HTTPException(status_code=404, detail="Client introuvable")
     except BeneficiaryNotFoundError:
         raise HTTPException(status_code=404, detail="Bénéficiaire introuvable")
 

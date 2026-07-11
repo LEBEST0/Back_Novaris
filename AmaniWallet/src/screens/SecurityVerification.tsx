@@ -11,29 +11,6 @@ interface SecurityVerificationProps {
   onBackToLogin: () => void;
 }
 
-const STEP_LABELS: Record<string, string> = {
-  DEVICE_CHECK: "Vérification de l'appareil",
-  INTEGRITY_CHECK: "Contrôle d'intégrité",
-  IDENTITY_CHALLENGE: "Vérification d'identité",
-  LIVENESS_CHECK: "Vivacité / pièce d'identité",
-  SIM_CHECK: "Vérification SIM",
-  FINAL_ACCESS_DECISION: "Décision finale",
-};
-
-function PipelineStepper({ pipeline }: { pipeline: EvaluateAccessResult["pipeline"] }) {
-  return (
-    <div className="pipeline-stepper">
-      {pipeline.map((step) => (
-        <div key={step.step} className={`pipeline-step status-${step.status.toLowerCase()}`}>
-          <span className="dot" aria-hidden="true" />
-          <span className="step-name">{STEP_LABELS[step.step] ?? step.step}</span>
-          <span className="step-status">{step.status}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 export function SecurityVerification({ result, demoScenario, onResolved, onBackToLogin }: SecurityVerificationProps) {
   const [otp, setOtp] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -90,8 +67,6 @@ export function SecurityVerification({ result, demoScenario, onResolved, onBackT
           <h1>Vérification de sécurité</h1>
         </div>
       </div>
-
-      <PipelineStepper pipeline={result.pipeline} />
 
       <div className={`verify-hero ${isCritical ? "critical" : ""}`}>
         <span className="icon-badge" aria-hidden="true">

@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
+from modules.transaction_monitoring.schemas import TransactionIn
+from modules.transaction_monitoring.service import TransactionMonitoringService
 from modules.wallet_access.access_rules import AccessContext, aggregate_score, evaluate_rules
 from modules.wallet_access.repository import WalletAccessRepository
 from modules.wallet_access.schemas import (
@@ -22,6 +24,8 @@ from modules.wallet_access.schemas import (
     PipelineStepOut,
     ProfileOut,
     RegisterIn,
+    TransferConfirmIn,
+    TransferConfirmOut,
     TransferPrepareIn,
     TransferPrepareOut,
 )
@@ -430,15 +434,11 @@ class WalletAccessService:
             {"id": t.id, "date": t.created_at.isoformat(), "amount": t.amount, "type": t.type, "status": t.status}
             for t in transactions
         ]
-        last_session = self.repo.get_latest_session(user_id)
         return DashboardOut(
             full_name=user.full_name,
             balance=user.balance,
             wallet_number_masked=mask_wallet_number(user.wallet_number),
             last_operations=last_ops,
-            session_secured=bool(last_session and last_session.final_decision == "ALLOW"),
-            device_recognized=bool(last_session and last_session.device_id),
-            last_verification_at=last_session.ended_at if last_session else None,
         )
 
     def list_beneficiaries(self, user_id: str) -> list[BeneficiaryOut]:
@@ -455,8 +455,13 @@ class WalletAccessService:
         ]
 
     def add_beneficiary(self, user_id: str, payload: BeneficiaryIn) -> BeneficiaryOut:
+        # Si ce numéro correspond à un client Amani Wallet existant, on réutilise son vrai
+        # numéro de wallet (résolution automatique, comme un vrai Mobile Money) ; sinon on
+        # attribue une référence interne — jamais demandée à l'utilisateur qui ajoute.
+        existing_user = self.repo.get_user_by_phone(payload.phone)
+        wallet_number = existing_user.wallet_number if existing_user else self._generate_unique_wallet_number()
         beneficiary = self.repo.create_beneficiary(
-            user_id=user_id, full_name=payload.full_name, phone=payload.phone, wallet_number=payload.wallet_number
+            user_id=user_id, full_name=payload.full_name, phone=payload.phone, wallet_number=wallet_number
         )
         self.repo.log_event(
             event_type="BENEFICIARY_ADDED",
@@ -496,6 +501,71 @@ class WalletAccessService:
             reason=payload.reason,
             fee_estimate=fee_estimate,
             total_debit=round(payload.amount + fee_estimate, 2),
+        )
+
+    def confirm_transfer(self, payload: TransferConfirmIn) -> TransferConfirmOut:
+        """Ici (et seulement ici) le module Transaction Monitoring est sollicité, comme
+        prévu : la préparation (recap) n'engage rien, la confirmation fait réellement
+        analyser l'opération par le même moteur règles + ML que le reste de la plateforme
+        — c'est ce qui la rend visible dans le graphe/l'investigation de l'Admin. Aucun
+        vrai virement bancaire n'a lieu ; seul le solde fictif du wallet est ajusté."""
+        user = self.repo.get_user(payload.user_id)
+        if user is None:
+            raise UserNotFoundError()
+        beneficiary = self.repo.get_beneficiary(payload.beneficiary_id)
+        if beneficiary is None or beneficiary.user_id != payload.user_id:
+            raise BeneficiaryNotFoundError()
+
+        primary_device = self.repo.get_primary_device(payload.user_id)
+
+        txn_payload = TransactionIn(
+            sender_phone=user.phone,
+            receiver_phone=beneficiary.phone,
+            amount=payload.amount,
+            transaction_type="transfer",
+            channel="mobile_app",
+            device_id=primary_device.device_fingerprint if primary_device else None,
+            note=payload.reason,
+        )
+        analysis = TransactionMonitoringService(self.db).analyze(txn_payload)
+
+        status_by_decision = {
+            "ALLOW": "COMPLETED",
+            "MONITOR": "COMPLETED",
+            "REVIEW": "PENDING",
+            "TEMPORARY_BLOCK": "BLOCKED",
+        }
+        status = status_by_decision.get(analysis.decision, "PENDING")
+        message_by_status = {
+            "COMPLETED": "Transfert envoyé avec succès.",
+            "PENDING": "Votre transfert est en cours de vérification. Vous serez notifié dès qu'il sera traité.",
+            "BLOCKED": "Ce transfert n'a pas pu être effectué. Contactez le support Amani Wallet pour plus d'informations.",
+        }
+
+        if status == "COMPLETED":
+            user.balance -= payload.amount
+
+        wallet_transaction = self.repo.create_wallet_transaction(
+            user_id=payload.user_id,
+            beneficiary_id=beneficiary.id,
+            amount=payload.amount,
+            type_="transfer",
+            status=status,
+        )
+
+        self.repo.log_event(
+            event_type="TRANSFER_CONFIRMED",
+            user_id=payload.user_id,
+            session_id=None,
+            payload={**payload.model_dump(mode="json"), "transaction_monitoring_id": analysis.transaction_id},
+            response_status=analysis.decision,
+        )
+        self.db.commit()
+
+        return TransferConfirmOut(
+            wallet_transaction_id=wallet_transaction.id,
+            status=status,
+            message=message_by_status[status],
         )
 
     def get_history(self, user_id: str) -> list[HistoryEntryOut]:

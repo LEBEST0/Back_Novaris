@@ -8,7 +8,7 @@ import type {
 
 // En dev, le backend FastAPI tourne sur le port 8010 (cf. Backend/README.md). En
 // production, VITE_API_BASE_URL pointe vers l'origine réelle du backend.
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8010";
+const API_BASE_URL = "https://back-novaris.onrender.com";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {

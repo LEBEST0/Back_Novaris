@@ -96,9 +96,6 @@ export interface DashboardData {
   balance: number;
   wallet_number_masked: string;
   last_operations: Array<{ id: string; date: string; amount: number; type: string; status: string }>;
-  session_secured: boolean;
-  device_recognized: boolean;
-  last_verification_at: string | null;
 }
 
 export interface Beneficiary {
@@ -118,6 +115,12 @@ export interface TransferPrepareResult {
   fee_estimate: number;
   total_debit: number;
   note: string;
+}
+
+export interface TransferConfirmResult {
+  wallet_transaction_id: string;
+  status: "COMPLETED" | "PENDING" | "BLOCKED";
+  message: string;
 }
 
 export interface HistoryEntry {
