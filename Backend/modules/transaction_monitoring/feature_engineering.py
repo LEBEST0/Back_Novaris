@@ -46,11 +46,13 @@ class HistoryEntry:
 @dataclass
 class IncomingEntry:
     """Transaction reçue par le client (lui en tant que destinataire), utilisée pour
-    détecter un schéma de transit transfrontalier (reçu d'un pays, renvoyé vers un autre)."""
+    détecter un schéma de transit transfrontalier (reçu d'un pays, renvoyé vers un autre)
+    ou de blanchiment via faux marchand (paiement marchand reçu, puis évacué)."""
 
     sender_country: str | None
     amount_xof_equivalent: float
     created_at: datetime
+    transaction_type: str = "transfer"
 
 
 def is_payday_window(timestamp: datetime) -> bool:
@@ -91,6 +93,7 @@ class ContextFeatures:
     is_cross_border_passthrough: bool
     is_new_device: bool
     is_balance_drained: bool
+    is_merchant_layering: bool
     agent_tx_count_last_1h: int
     agent_distinct_senders_last_1h: int
     kyc_level: str
@@ -122,6 +125,7 @@ class ContextFeatures:
             "is_cross_border_passthrough": self.is_cross_border_passthrough,
             "is_new_device": self.is_new_device,
             "is_balance_drained": self.is_balance_drained,
+            "is_merchant_layering": self.is_merchant_layering,
             "agent_tx_count_last_1h": self.agent_tx_count_last_1h,
             "agent_distinct_senders_last_1h": self.agent_distinct_senders_last_1h,
             "kyc_level": self.kyc_level,
@@ -200,6 +204,7 @@ def compute_context_features(
     minutes_since_last_incoming = NO_INCOMING_SENTINEL_MINUTES
     incoming_amount_ratio = 0.0
     is_cross_border_passthrough = False
+    is_merchant_layering = False
     if past_incoming:
         last_incoming = max(past_incoming, key=lambda h: h.created_at)
         minutes_since_last_incoming = (timestamp - last_incoming.created_at).total_seconds() / 60
@@ -208,15 +213,22 @@ def compute_context_features(
         same_amount = (
             PASSTHROUGH_AMOUNT_RATIO_RANGE[0] <= incoming_amount_ratio <= PASSTHROUGH_AMOUNT_RATIO_RANGE[1]
         )
+        recent = minutes_since_last_incoming <= PASSTHROUGH_WINDOW_MINUTES
         different_country = (
             last_incoming.sender_country is not None
             and receiver_country is not None
             and last_incoming.sender_country != receiver_country
         )
-        is_cross_border_passthrough = (
-            minutes_since_last_incoming <= PASSTHROUGH_WINDOW_MINUTES
+        is_cross_border_passthrough = recent and same_amount and different_country
+
+        # Blanchiment via faux marchand : un paiement marchand reçu est évacué (retrait ou
+        # renvoi) quasi immédiatement, pour un montant similaire — schéma indépendant du
+        # pays (contrairement au transit transfrontalier ci-dessus).
+        is_merchant_layering = (
+            recent
             and same_amount
-            and different_country
+            and last_incoming.transaction_type == "merchant_payment"
+            and transaction_type in {"withdrawal", "transfer"}
         )
 
     # Un lot déclaré (paiement de masse) n'est pas automatiquement légitime : un compte
@@ -278,6 +290,7 @@ def compute_context_features(
         is_cross_border_passthrough=is_cross_border_passthrough,
         is_new_device=is_new_device,
         is_balance_drained=is_balance_drained,
+        is_merchant_layering=is_merchant_layering,
         agent_tx_count_last_1h=agent_tx_count_last_1h,
         agent_distinct_senders_last_1h=agent_distinct_senders_last_1h,
         kyc_level=kyc_level,

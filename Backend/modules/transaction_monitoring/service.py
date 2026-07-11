@@ -5,8 +5,9 @@ from sqlalchemy.orm import Session
 from core.decision_engine import aggregate_final_score, compute_confidence, decide
 from modules.transaction_monitoring import ml, rules
 from modules.transaction_monitoring.feature_engineering import compute_context_features
+from modules.transaction_monitoring.presenters import transaction_to_analysis_out
 from modules.transaction_monitoring.repository import TransactionRepository
-from modules.transaction_monitoring.schemas import TransactionAnalysisOut, TransactionIn, RuleFlagOut
+from modules.transaction_monitoring.schemas import TransactionAnalysisOut, TransactionIn
 from shared.utils.phone import country_from_phone, currency_for_country
 
 
@@ -94,27 +95,4 @@ class TransactionMonitoringService:
             model_version=model_bundle.metadata.get("model_version", "unknown"),
         )
 
-        return TransactionAnalysisOut(
-            transaction_id=transaction.transaction_id,
-            sender_phone=transaction.sender_phone,
-            sender_operator=sender.operator,
-            sender_country=sender.country,
-            receiver_phone=transaction.receiver_phone,
-            receiver_country=receiver_country,
-            is_cross_border=features.is_cross_border,
-            batch_id=transaction.batch_id,
-            amount=transaction.amount,
-            currency=transaction.currency,
-            transaction_type=transaction.transaction_type,
-            rule_score=rule_score,
-            ml_score=ml_score,
-            final_score=final_score,
-            risk_level=risk_level,
-            decision=decision,
-            confidence=confidence,
-            reasons=reasons,
-            rule_flags=[RuleFlagOut(code=r.code, description=r.description, weight=r.weight) for r in triggered_flags],
-            top_ml_factors=top_ml_factors,
-            model_version=transaction.analysis.model_version,
-            computed_at=transaction.analysis.computed_at,
-        )
+        return transaction_to_analysis_out(transaction, self.db)

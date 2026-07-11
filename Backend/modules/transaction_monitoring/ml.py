@@ -42,6 +42,7 @@ NUMERIC_COLUMNS = [
     "is_cross_border_passthrough",
     "is_new_device",
     "is_balance_drained",
+    "is_merchant_layering",
     "agent_tx_count_last_1h",
     "agent_distinct_senders_last_1h",
 ]
@@ -76,7 +77,8 @@ HUMAN_LABELS = {
     "is_cross_border_passthrough": "Schéma de transit transfrontalier",
     "is_new_device": "Nouvel appareil jamais utilisé",
     "is_balance_drained": "Solde vidé après la transaction",
-    "agent_tx_count_last_1h": "Volume de retraits traités par l'agent (1h)",
+    "is_merchant_layering": "Évacuation rapide d'un paiement marchand reçu",
+    "agent_tx_count_last_1h": "Volume de dépôts/retraits traités par l'agent (1h)",
     "agent_distinct_senders_last_1h": "Diversité de clients chez l'agent (1h)",
 }
 
@@ -97,6 +99,7 @@ def context_to_raw_row(features: ContextFeatures) -> dict:
     row["is_cross_border_passthrough"] = int(row["is_cross_border_passthrough"])
     row["is_new_device"] = int(row["is_new_device"])
     row["is_balance_drained"] = int(row["is_balance_drained"])
+    row["is_merchant_layering"] = int(row["is_merchant_layering"])
     row["kyc_level"] = features.kyc_level
     row["transaction_type"] = features.transaction_type
     row["channel"] = features.channel

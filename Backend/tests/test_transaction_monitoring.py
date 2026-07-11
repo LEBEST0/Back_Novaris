@@ -44,6 +44,7 @@ def _features(**overrides) -> ContextFeatures:
         is_cross_border_passthrough=False,
         is_new_device=False,
         is_balance_drained=False,
+        is_merchant_layering=False,
         agent_tx_count_last_1h=0,
         agent_distinct_senders_last_1h=0,
         kyc_level="standard",
@@ -185,6 +186,35 @@ def test_agent_collusion_cashout_triggers_on_high_volume_diverse_senders():
     )
     results = evaluate_rules(features)
     assert any(r.code == "AGENT_COLLUSION_CASHOUT" and r.triggered for r in results)
+
+
+def test_agent_collusion_cashout_triggers_on_fake_deposits_too():
+    # Symétrique au cash-out : un agent qui credite (fausse dépôt) beaucoup de clients
+    # différents en peu de temps est le même schéma de complicité côté dépôt.
+    features = _features(
+        transaction_type="deposit",
+        agent_tx_count_last_1h=8,
+        agent_distinct_senders_last_1h=7,
+    )
+    results = evaluate_rules(features)
+    assert any(r.code == "AGENT_COLLUSION_CASHOUT" and r.triggered for r in results)
+
+
+def test_agent_collusion_cashout_does_not_trigger_on_merchant_payment():
+    # La règle ne doit s'appliquer qu'aux flux agent-médiés (dépôt/retrait).
+    features = _features(
+        transaction_type="merchant_payment",
+        agent_tx_count_last_1h=8,
+        agent_distinct_senders_last_1h=7,
+    )
+    results = evaluate_rules(features)
+    assert not any(r.code == "AGENT_COLLUSION_CASHOUT" and r.triggered for r in results)
+
+
+def test_merchant_layering_signal_triggers():
+    features = _features(transaction_type="transfer", is_merchant_layering=True)
+    results = evaluate_rules(features)
+    assert any(r.code == "MERCHANT_LAYERING_SIGNAL" and r.triggered for r in results)
 
 
 def test_account_drained_triggers_on_near_zero_balance():

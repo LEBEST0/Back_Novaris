@@ -169,21 +169,38 @@ def _r_social_engineering_signal(f: ContextFeatures) -> RuleResult:
     return RuleResult("SOCIAL_ENGINEERING_SIGNAL", desc, 30.0, triggered)
 
 
+AGENT_COLLUSION_TYPES = {"withdrawal", "deposit"}
+
+
 def _r_agent_collusion_cashout(f: ContextFeatures) -> RuleResult:
-    # Un agent qui traite un volume anormalement élevé de retraits pour de nombreux
-    # clients différents en peu de temps est un schéma documenté de complicité agent /
-    # "cash-out mill" (GSMA) — indépendant du comportement de CE client en particulier.
+    # Un agent qui traite un volume anormalement élevé de dépôts OU de retraits pour de
+    # nombreux clients différents en peu de temps est un schéma documenté de complicité
+    # agent (GSMA) — "cash-out mill" côté retrait, faux dépôt (crédit sans cash réel remis)
+    # côté dépôt. Indépendant du comportement de CE client en particulier.
     triggered = (
-        f.transaction_type == "withdrawal"
+        f.transaction_type in AGENT_COLLUSION_TYPES
         and f.agent_tx_count_last_1h >= AGENT_COLLUSION_TX_THRESHOLD
         and f.agent_distinct_senders_last_1h >= AGENT_COLLUSION_DISTINCT_SENDERS_THRESHOLD
     )
+    action = "retraits" if f.transaction_type == "withdrawal" else "dépôts"
     desc = (
-        f"Agent ayant traité {f.agent_tx_count_last_1h} retraits pour "
+        f"Agent ayant traité {f.agent_tx_count_last_1h} {action} pour "
         f"{f.agent_distinct_senders_last_1h} clients différents en moins d'une heure — "
-        "possible complicité agent / point de cash-out frauduleux"
+        "possible complicité agent (cash-out frauduleux ou faux dépôt)"
     )
     return RuleResult("AGENT_COLLUSION_CASHOUT", desc, 30.0, triggered)
+
+
+def _r_merchant_layering(f: ContextFeatures) -> RuleResult:
+    # Un paiement marchand reçu puis évacué (retrait ou renvoi) quasi immédiatement pour
+    # un montant similaire est un schéma de blanchiment via faux marchand (transaction
+    # laundering) — indépendant du pays, contrairement au transit transfrontalier.
+    triggered = f.is_merchant_layering
+    desc = (
+        f"Paiement marchand reçu il y a moins d'une heure, puis évacuation quasi immédiate "
+        f"de {f.amount:,.0f} {f.currency} — schéma de blanchiment via faux marchand"
+    )
+    return RuleResult("MERCHANT_LAYERING_SIGNAL", desc, 35.0, triggered)
 
 
 def _r_account_drained(f: ContextFeatures) -> RuleResult:
@@ -212,6 +229,7 @@ RULES = [
     _r_social_engineering_signal,
     _r_agent_collusion_cashout,
     _r_account_drained,
+    _r_merchant_layering,
 ]
 
 

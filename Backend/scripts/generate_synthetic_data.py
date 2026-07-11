@@ -153,6 +153,7 @@ FRAUD_SCENARIOS = [
     "amount_spike", "velocity_burst", "structuring", "night_fraud",
     "new_account_takeover", "fanout_mule", "cross_border_passthrough",
     "sim_swap_takeover", "social_engineering", "batch_mule_fanout",
+    "merchant_layering",
 ]
 N_PER_SCENARIO = 45  # nb de clients cibles par scénario de fraude
 N_AGENT_COLLUSION_AGENTS = 12  # nb d'agents "compromis" simulés (scénario indépendant, cf. plus bas)
@@ -332,22 +333,37 @@ def generate_normal_transactions(profile: CustomerProfile, agents_by_country: di
 def generate_batch_payment_transactions(profile: CustomerProfile) -> list[dict]:
     """Paiement de masse légitime (Clapay B2B) : un lot déclaré, plusieurs bénéficiaires,
     une seule opération autorisée. Sert à entraîner le modèle à ne PAS traiter ça comme
-    un schéma de fan-out frauduleux (cf. rules.FANOUT_PATTERN, batch-aware)."""
+    un schéma de fan-out frauduleux (cf. rules.FANOUT_PATTERN, batch-aware).
+
+    Un vrai virement de paie répète les mêmes employés/fournisseurs d'un lot à l'autre —
+    contrairement à un lot frauduleux (batch_mule_fanout) qui vise des comptes neufs à
+    chaque fois. D'où un pool de bénéficiaires stable, réutilisé entre les lots, avec un
+    faible taux de renouvellement (nouvel employé/fournisseur occasionnel)."""
     if profile.customer_type not in ("merchant", "agent"):
         return []
 
     txs = []
     n_batches = np.random.poisson(8)  # ~tous les 1-2 mois sur l'année simulée
+    if n_batches == 0:
+        return txs
+
+    payroll_pool = [random_phone_for_country(profile.country)[0] for _ in range(random.randint(4, 10))]
+
     for _ in range(n_batches):
         ts = sample_timestamp(profile)
         if ts < profile.account_created_at:
             continue
         batch_id = f"BATCH-{uuid.uuid4().hex[:10].upper()}"
-        n_recipients = random.randint(4, 10)
         base_amount = sample_amount("transfer", profile.scale, profile.currency)
-        for i in range(n_recipients):
+
+        recipients = list(payroll_pool)
+        if random.random() < 0.15:  # turnover occasionnel (nouvel employé/fournisseur)
+            new_member = random_phone_for_country(profile.country)[0]
+            payroll_pool.append(new_member)
+            recipients.append(new_member)
+
+        for receiver in recipients:
             leg_ts = ts + timedelta(seconds=random.uniform(0, 300))
-            receiver = random_phone_for_country(profile.country)[0]
             amount = base_amount * random.uniform(0.85, 1.15)
             txs.append({
                 "sender_phone": profile.phone,
@@ -392,8 +408,16 @@ def generate_fraud_transactions(profile: CustomerProfile, scenario: str) -> list
     baseline = _amount_in_local_currency(TYPE_BASELINE_AMOUNT_XOF["transfer"] * profile.scale, profile.currency)
 
     if scenario == "amount_spike":
+        # Compte compromis effectuant un montant anormal — via un virement P2P ou un
+        # paiement marchand (achat non autorisé avec des identifiants volés) : les deux
+        # sont des manifestations réalistes du même schéma (cf. is_merchant_layering, qui
+        # couvre le cas où l'argent est ensuite évacué après un paiement marchand REÇU —
+        # ici c'est l'inverse, un paiement marchand ENVOYÉ frauduleusement).
         amount = baseline * random.uniform(6, 15)
-        txs.append(base_tx(event_ts, random_phone_for_country(profile.country)[0], amount))
+        spike_type = random.choice(["transfer", "merchant_payment"])
+        txs.append(base_tx(
+            event_ts, random_phone_for_country(profile.country)[0], amount, ttype=spike_type,
+        ))
 
     elif scenario == "velocity_burst":
         n = random.randint(3, 6)
@@ -500,6 +524,34 @@ def generate_fraud_transactions(profile: CustomerProfile, scenario: str) -> list
                 ts, random_phone_for_country(profile.country)[0], amount, batch_id=fraud_batch_id,
             ))
 
+    elif scenario == "merchant_layering":
+        # Blanchiment via faux marchand : le profil cible se comporte comme un marchand
+        # compromis. Il reçoit un paiement marchand d'un tiers, puis évacue quasi
+        # aussitôt les fonds (retrait ou renvoi) — cf. rules.MERCHANT_LAYERING_SIGNAL.
+        payer_phone, _ = random_phone_for_country(profile.country)
+        incoming_amount = baseline * random.uniform(2, 6)
+        txs.append({
+            "sender_phone": payer_phone,
+            "receiver_phone": profile.phone,
+            "amount": round(incoming_amount, 2),
+            "currency": profile.currency,
+            "transaction_type": "merchant_payment",
+            "channel": random.choices(CHANNELS, weights=CHANNEL_WEIGHTS)[0],
+            "timestamp": event_ts,
+            "sender_city": "",
+            "device_id": f"DEV-EXT-{abs(hash(payer_phone)) % 100000}",
+            "batch_id": None,
+            "agent_id": None,
+            "is_fraud": 0,
+            "fraud_scenario": "",
+        })
+        outgoing_ts = event_ts + timedelta(minutes=random.uniform(10, 45))
+        outgoing_amount = incoming_amount * random.uniform(0.85, 1.05)
+        # "transfer" (pas "withdrawal") : une transaction de type retrait est, dans ce
+        # générateur, toujours à destination de soi-même via un agent (cf.
+        # generate_normal_transactions) — ici le faux marchand renvoie les fonds à un tiers.
+        txs.append(base_tx(outgoing_ts, random_phone_for_country(profile.country)[0], outgoing_amount))
+
     return [t for t in txs if t["timestamp"] >= profile.account_created_at]
 
 
@@ -534,10 +586,13 @@ def assign_fraud_targets(customers: list[CustomerProfile]) -> list[tuple[Custome
 def generate_agent_collusion_scenarios(
     agents: list[Agent], customers: list[CustomerProfile]
 ) -> list[dict]:
-    """Complicité d'agent / "cash-out mill" (GSMA) : un agent compromis traite un volume
-    anormal de retraits pour de nombreux clients différents en peu de temps. Contrairement
-    aux autres scénarios, le fil conducteur frauduleux est l'AGENT, pas un client précis
-    (cf. rules.AGENT_COLLUSION_CASHOUT, qui regarde l'activité de l'agent, pas du client)."""
+    """Complicité d'agent (GSMA) : un agent compromis traite un volume anormal de
+    dépôts OU de retraits pour de nombreux clients différents en peu de temps.
+    - "cash-out mill" (retrait) : exfiltre du cash déjà présent sur les comptes.
+    - faux dépôt (deposit) : crédite des comptes sans cash réel remis (schéma symétrique,
+      tout aussi documenté par le GSMA côté fraude interne/agent).
+    Contrairement aux autres scénarios, le fil conducteur frauduleux est l'AGENT, pas un
+    client précis (cf. rules.AGENT_COLLUSION_CASHOUT, qui regarde l'activité de l'agent)."""
     txs = []
     compromised_agents = random.sample(agents, k=min(N_AGENT_COLLUSION_AGENTS, len(agents)))
     customers_by_country: dict[str, list[CustomerProfile]] = {}
@@ -551,6 +606,8 @@ def generate_agent_collusion_scenarios(
         event_day = random.uniform(5, SIM_DAYS - 1)
         event_ts = SIM_START + timedelta(days=event_day)
         senders = random.sample(pool, k=min(random.randint(5, 8), len(pool)))
+        mode = random.choice(["withdrawal", "deposit"])
+        scenario_name = "agent_collusion_cashout" if mode == "withdrawal" else "agent_fake_deposit"
         for i, sender in enumerate(senders):
             if event_ts < sender.account_created_at:
                 continue
@@ -561,7 +618,7 @@ def generate_agent_collusion_scenarios(
                 "receiver_phone": sender.phone,
                 "amount": round(amount, 2),
                 "currency": sender.currency,
-                "transaction_type": "withdrawal",
+                "transaction_type": mode,
                 "channel": "agent",
                 "timestamp": ts,
                 "sender_city": agent.city,
@@ -569,7 +626,7 @@ def generate_agent_collusion_scenarios(
                 "batch_id": None,
                 "agent_id": agent.agent_id,
                 "is_fraud": 1,
-                "fraud_scenario": "agent_collusion_cashout",
+                "fraud_scenario": scenario_name,
             })
     return txs
 

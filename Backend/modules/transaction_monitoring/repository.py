@@ -77,10 +77,10 @@ class TransactionRepository:
         return int(row[0] or 0), int(row[1] or 0)
 
     def get_receiver_history(self, receiver_phone: str, *, before: datetime) -> list[IncomingEntry]:
-        """Transactions reçues par ce numéro (lui en tant que destinataire), utilisée
-        uniquement pour détecter un schéma de transit transfrontalier (reçu puis renvoyé
-        rapidement vers un autre pays). Fenêtre courte : le passthrough se joue en
-        minutes/heures, pas en semaines."""
+        """Transactions reçues par ce numéro (lui en tant que destinataire), utilisée pour
+        détecter un schéma de transit transfrontalier (reçu puis renvoyé rapidement vers
+        un autre pays) ou de blanchiment via faux marchand (paiement marchand reçu puis
+        évacué). Fenêtre courte : ces schémas se jouent en minutes/heures, pas en semaines."""
         window_start = before - timedelta(hours=6)
         rows = self.db.scalars(
             select(Transaction)
@@ -93,6 +93,7 @@ class TransactionRepository:
                 sender_country=country_from_phone(r.sender_phone),
                 amount_xof_equivalent=to_xof_equivalent(r.amount, r.currency),
                 created_at=r.created_at,
+                transaction_type=r.transaction_type,
             )
             for r in rows
         ]
@@ -167,3 +168,95 @@ class TransactionRepository:
                 .offset(offset)
             )
         )
+
+    def set_feedback(self, transaction_id: str, *, feedback: str, note: str | None) -> Transaction | None:
+        transaction = self.get_transaction(transaction_id)
+        if not transaction or not transaction.analysis:
+            return None
+        transaction.analysis.analyst_feedback = feedback
+        transaction.analysis.feedback_note = note
+        transaction.analysis.feedback_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        self.db.commit()
+        self.db.refresh(transaction)
+        return transaction
+
+    def get_dashboard_kpis(self) -> dict:
+        """Agrégats pour le dashboard admin — calculés directement en base, jamais
+        estimés côté frontend, pour rester fidèles à ce qui a réellement été analysé."""
+        total = self.db.scalar(select(func.count(TransactionAnalysis.id))) or 0
+        if total == 0:
+            return {
+                "transactions_analyzed": 0,
+                "active_alerts": 0,
+                "blocking_rate": 0.0,
+                "average_score": 0.0,
+                "pending_analyst_review": 0,
+                "fraud_amount_confirmed": 0.0,
+                "false_positive_rate": None,
+            }
+
+        active_alerts = self.db.scalar(
+            select(func.count(TransactionAnalysis.id)).where(TransactionAnalysis.decision != "ALLOW")
+        ) or 0
+        blocked = self.db.scalar(
+            select(func.count(TransactionAnalysis.id)).where(TransactionAnalysis.decision == "TEMPORARY_BLOCK")
+        ) or 0
+        average_score = self.db.scalar(select(func.avg(TransactionAnalysis.final_score))) or 0.0
+        pending_review = self.db.scalar(
+            select(func.count(TransactionAnalysis.id))
+            .where(TransactionAnalysis.decision.in_(["REVIEW", "TEMPORARY_BLOCK"]))
+            .where(TransactionAnalysis.analyst_feedback.is_(None))
+        ) or 0
+        fraud_amount_confirmed = self.db.scalar(
+            select(func.coalesce(func.sum(Transaction.amount), 0.0))
+            .join(TransactionAnalysis, TransactionAnalysis.transaction_id == Transaction.transaction_id)
+            .where(TransactionAnalysis.analyst_feedback == "CONFIRMED")
+        ) or 0.0
+        feedback_total = self.db.scalar(
+            select(func.count(TransactionAnalysis.id)).where(TransactionAnalysis.analyst_feedback.is_not(None))
+        ) or 0
+        false_positive_rate = None
+        if feedback_total > 0:
+            false_positives = self.db.scalar(
+                select(func.count(TransactionAnalysis.id)).where(
+                    TransactionAnalysis.analyst_feedback == "FALSE_POSITIVE"
+                )
+            ) or 0
+            false_positive_rate = round(false_positives / feedback_total * 100, 1)
+
+        return {
+            "transactions_analyzed": total,
+            "active_alerts": active_alerts,
+            "blocking_rate": round(blocked / total * 100, 1),
+            "average_score": round(average_score, 1),
+            "pending_analyst_review": pending_review,
+            "fraud_amount_confirmed": fraud_amount_confirmed,
+            "false_positive_rate": false_positive_rate,
+        }
+
+    def get_dashboard_trend(self, days: int = 7) -> list[dict]:
+        """Nombre de transactions/alertes/score moyen par jour, sur les `days` derniers
+        jours — agrégé en base (func.strftime, portable sur SQLite)."""
+        window_start = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days - 1)
+        day_expr = func.strftime("%Y-%m-%d", Transaction.created_at)
+        rows = self.db.execute(
+            select(
+                day_expr.label("day"),
+                func.count(Transaction.transaction_id),
+                func.sum(func.iif(TransactionAnalysis.decision != "ALLOW", 1, 0)),
+                func.avg(TransactionAnalysis.final_score),
+            )
+            .join(TransactionAnalysis, TransactionAnalysis.transaction_id == Transaction.transaction_id)
+            .where(Transaction.created_at >= window_start)
+            .group_by(day_expr)
+            .order_by(day_expr)
+        ).all()
+        return [
+            {
+                "date": row[0],
+                "transactions_analyzed": int(row[1] or 0),
+                "alerts": int(row[2] or 0),
+                "average_score": round(float(row[3] or 0.0), 1),
+            }
+            for row in rows
+        ]

@@ -23,6 +23,7 @@
     "is_cross_border_passthrough",
     "is_new_device",
     "is_balance_drained",
+    "is_merchant_layering",
     "agent_tx_count_last_1h",
     "agent_distinct_senders_last_1h",
     "kyc_level_basic",
@@ -42,62 +43,62 @@
   ],
   "metadata": {
     "model_version": "txn-monitoring-v1",
-    "trained_at": "2026-07-05T19:10:39.770541+00:00",
-    "n_train": 415450,
-    "n_test": 103863,
-    "fraud_rate_train": 0.002719942231315441,
+    "trained_at": "2026-07-10T09:55:23.179019+00:00",
+    "n_train": 416059,
+    "n_test": 104015,
+    "fraud_rate_train": 0.0027904696208951134,
     "metrics": {
-      "auc_roc": 0.9999566242090594,
-      "auc_pr": 0.9900971492784979,
+      "auc_roc": 0.9996890983286376,
+      "auc_pr": 0.9766543975349102,
       "confusion_matrix": [
         [
-          103397,
-          184
+          103559,
+          166
         ],
         [
-          2,
-          280
+          7,
+          283
         ]
       ],
       "classification_report": {
         "0": {
-          "precision": 0.9999806574531669,
-          "recall": 0.9982236124385746,
-          "f1-score": 0.9991013624504783,
-          "support": 103581.0
+          "precision": 0.9999324102504683,
+          "recall": 0.9983996143649072,
+          "f1-score": 0.9991654244516164,
+          "support": 103725.0
         },
         "1": {
-          "precision": 0.603448275862069,
-          "recall": 0.9929078014184397,
-          "f1-score": 0.7506702412868632,
-          "support": 282.0
+          "precision": 0.6302895322939867,
+          "recall": 0.9758620689655172,
+          "f1-score": 0.7658998646820027,
+          "support": 290.0
         },
-        "accuracy": 0.9982091793997863,
+        "accuracy": 0.9983367783492766,
         "macro avg": {
-          "precision": 0.8017144666576179,
-          "recall": 0.9955657069285071,
-          "f1-score": 0.8748858018686707,
-          "support": 103863.0
+          "precision": 0.8151109712722275,
+          "recall": 0.9871308416652123,
+          "f1-score": 0.8825326445668096,
+          "support": 104015.0
         },
         "weighted avg": {
-          "precision": 0.9989040263948622,
-          "recall": 0.9982091793997863,
-          "f1-score": 0.9984268433612152,
-          "support": 103863.0
+          "precision": 0.998901823944576,
+          "recall": 0.9983367783492766,
+          "f1-score": 0.9985150662116203,
+          "support": 104015.0
         }
       }
     },
     "top_features": {
-      "transaction_type_transfer": 1.939071536064148,
-      "sender_avg_amount_30d": 1.1583056449890137,
-      "is_known_receiver": 0.8665114045143127,
-      "amount_to_avg_ratio": 0.72897869348526,
-      "sum_amount_last_1h": 0.6881552338600159,
-      "amount_xof_equivalent": 0.6166011095046997,
-      "minutes_since_last_incoming": 0.5398205518722534,
-      "batch_size_so_far": 0.5027367472648621,
-      "hour": 0.3862535357475281,
-      "transaction_type_deposit": 0.3711746633052826
+      "transaction_type_transfer": 1.8297868967056274,
+      "sender_avg_amount_30d": 1.2508023977279663,
+      "is_known_receiver": 1.0353517532348633,
+      "amount_to_avg_ratio": 0.931721568107605,
+      "amount_xof_equivalent": 0.6909440755844116,
+      "sum_amount_last_1h": 0.6747337579727173,
+      "is_payday_window": 0.4270673096179962,
+      "is_new_device": 0.4156263470649719,
+      "minutes_since_last_incoming": 0.4108869135379791,
+      "batch_size_so_far": 0.3777208924293518
     }
   }
 }

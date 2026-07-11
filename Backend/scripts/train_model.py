@@ -62,6 +62,7 @@ def build_incoming_index(transactions: pd.DataFrame) -> dict[str, tuple[list, li
                 sender_country=country_from_phone(row.sender_phone),
                 amount_xof_equivalent=to_xof_equivalent(row.amount, row.currency),
                 created_at=row.timestamp,
+                transaction_type=row.transaction_type,
             )
             for row in group.itertuples()
         ]
@@ -178,6 +179,17 @@ def main():
         right_on="phone",
         how="left",
     )
+
+    # Certaines transactions ont un émetteur hors de notre base clients (ex : la jambe
+    # entrante du scénario cross_border_passthrough, où un tiers étranger envoie au
+    # client cible — volontairement pas un client suivi). Sans ce repli, account_age_days
+    # deviendrait NaN et is_cross_border serait calculé sur un pays manquant. On applique
+    # le même repli qu'en production pour un client inconnu (repository.get_or_create_customer) :
+    # compte considéré "vu pour la première fois maintenant", KYC de base, pays déduit du numéro.
+    missing_sender = transactions["phone"].isna()
+    transactions.loc[missing_sender, "account_created_at"] = transactions.loc[missing_sender, "timestamp"]
+    transactions.loc[missing_sender, "kyc_level"] = "basic"
+    transactions.loc[missing_sender, "country"] = transactions.loc[missing_sender, "sender_phone"].map(country_from_phone)
 
     print("Calcul des variables point-in-time (règles + ML partagent la même logique)...")
     dataset = build_feature_dataset(transactions)

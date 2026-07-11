@@ -22,6 +22,13 @@ class Customer(Base):
     phone: Mapped[str] = mapped_column(String(20), unique=True, index=True)
     full_name: Mapped[str] = mapped_column(String(120))
     kyc_level: Mapped[str] = mapped_column(String(20), default="basic")
+    # Identifiant de pièce d'identité (KYC), renseigné uniquement pour kyc_level != "basic"
+    # (KYC basique = numéro vérifié par SMS seulement, pas de pièce d'identité collectée).
+    # Deux comptes (numéros de téléphone/opérateurs différents, potentiellement dans des
+    # pays différents de l'écosystème Clapay) qui partagent ce même national_id désignent
+    # la même personne physique — c'est la clé de résolution d'identité inter-réseaux :
+    # le numéro de téléphone seul ne suffit pas (cf. discussion produit sur le graphe).
+    national_id: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
     customer_type: Mapped[str] = mapped_column(String(20), default="individual")
     operator: Mapped[str] = mapped_column(String(30), default="Autre / inconnu")
     country: Mapped[str] = mapped_column(String(40), default="Côte d'Ivoire")
@@ -90,5 +97,11 @@ class TransactionAnalysis(Base):
     top_ml_factors: Mapped[list] = mapped_column(JSON)
     model_version: Mapped[str] = mapped_column(String(40))
     computed_at: Mapped[datetime] = mapped_column(DateTime(), default=_utcnow)
+
+    # Retour analyste (dashboard admin) : boucle de contrôle humain, pas encore réinjectée
+    # dans l'entraînement mais déjà utile pour mesurer la precision perçue en production.
+    analyst_feedback: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    feedback_note: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    feedback_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
 
     transaction: Mapped["Transaction"] = relationship(back_populates="analysis")

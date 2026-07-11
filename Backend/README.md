@@ -95,7 +95,8 @@ niveau de risque, une décision et les raisons qui l'expliquent.
 - **Customer** : titulaire de portefeuille suivi (émetteur), créé automatiquement au
   premier contact si inconnu (kyc_level, type de client, ville, ancienneté du compte).
 - **Transaction** : 12 champs minimum reçus du canal d'entrée (téléphones émetteur/
-  destinataire, montant, devise, type, canal, timestamp, ville, device_id, note).
+  destinataire, montant, devise, type, canal, timestamp, ville, device_id, note), plus
+  `batch_id`, `agent_id`, `balance_before_sender`/`balance_after_sender` (tous optionnels).
 - **TransactionAnalysis** : résultat d'analyse (scores règles/ML/final, décision,
   raisons, facteurs SHAP, version du modèle) — constitue la piste d'audit.
 
@@ -112,14 +113,16 @@ blanchiment par superposition). Détails et résultats vérifiés en direct dans
 
 ### Moteur hybride règles + ML
 
-1. **Règles métier** (`rules.py`, 13 règles) : pic de montant, vélocité anormale,
+1. **Règles métier** (`rules.py`, 14 règles) : pic de montant, vélocité anormale,
    bénéficiaire inconnu pour un montant élevé, activité nocturne, nouveau compte à
    forte valeur, fractionnement (structuring), distribution vers plusieurs bénéficiaires
    hors paiement de masse déclaré (fan-out), transit transfrontalier, paiement de masse
-   détourné, changement d'appareil suspect (SIM swap), ingénierie sociale, complicité
-   d'agent (cash-out), solde vidé. Chaque règle est déterministe, pondérée et documentée
-   en langage naturel — auditable indépendamment du modèle ML. Liste complète et
-   justification GSMA/PaySim dans le [README du module](modules/transaction_monitoring/README.md).
+   détourné (`SUSPICIOUS_BATCH`), changement d'appareil suspect (`SIM_SWAP_SIGNAL`),
+   ingénierie sociale (`SOCIAL_ENGINEERING_SIGNAL`), complicité d'agent sur dépôt ou
+   retrait (`AGENT_COLLUSION_CASHOUT`), solde vidé (`ACCOUNT_DRAINED`), blanchiment via
+   faux marchand (`MERCHANT_LAYERING_SIGNAL`). Chaque règle est déterministe, pondérée et
+   documentée en langage naturel — auditable indépendamment du modèle ML. Détail complet
+   dans le [README du module](modules/transaction_monitoring/README.md).
 2. **Modèle ML** (`ml.py`) : XGBoost entraîné sur données synthétiques, avec un
    explicateur SHAP qui traduit les 3 facteurs les plus influents en phrases lisibles
    par un analyste.
@@ -171,6 +174,20 @@ Matrice de décision (alignée sur le document produit) :
 
 **`GET /api/v1/transactions/{transaction_id}`** — relit une analyse déjà calculée.
 
+**`GET /api/v1/transactions?limit=`** — liste les analyses les plus récentes (1-200,
+défaut 50), pour l'interface Admin.
+
+**`PATCH /api/v1/transactions/{transaction_id}/feedback`** — enregistre le feedback d'un
+analyste (`CONFIRMED` ou `FALSE_POSITIVE`) avec une note optionnelle, pour le suivi qualité
+et le calcul du taux de faux positifs.
+
+**`GET /api/v1/dashboard/kpis`** — agrégats calculés en SQL (transactions analysées,
+alertes actives, taux de blocage, revues en attente, montant de fraude confirmée, taux de
+faux positifs) pour les cartes KPI du dashboard.
+
+**`GET /api/v1/dashboard/trend?days=`** — série temporelle (transactions/alertes/score
+moyen par jour) pour le graphique d'activité du dashboard.
+
 **`GET /health`** — vérification de disponibilité du service.
 
 La documentation interactive complète (schémas, essais en direct) est disponible sur
@@ -178,6 +195,53 @@ La documentation interactive complète (schémas, essais en direct) est disponib
 
 Détails complets (moteur de règles, feature engineering, entraînement) :
 [modules/transaction_monitoring/README.md](modules/transaction_monitoring/README.md).
+
+## Interface Admin (Dashboard)
+
+Un frontend React + TypeScript (`../Frontend`) consomme cette API pour donner à un
+analyste ou expert risque une vue complète sur chaque décision : score final, décomposition
+règles/ML, règles déclenchées, facteurs SHAP (`top_ml_factors`) et validation analyste
+(confirmation / faux positif). Il reprend le thème, la typographie et les styles d'une
+maquette fournie séparément (pas de Tailwind, design system CSS custom dans `src/styles.css`).
+
+Périmètre actuel (phase 1) : dashboard (KPIs + tendance réels), formulaire d'analyse de
+transaction, dossier d'investigation détaillé, rapport imprimable, et un graphe centré sur
+une transaction (émetteur/destinataire/agent/device/batch — uniquement les entités
+réellement présentes dans les données, nœuds = cercles, relations = arêtes avec leurs
+propriétés visibles au survol). Relier entre eux les nœuds de *plusieurs* transactions (vue
+réseau multi-comptes, outils de théorie des graphes, puis GNN prédictif) reste prévu pour une
+phase ultérieure.
+
+**Identité des nœuds — téléphone vs KYC** : le numéro de téléphone seul ne suffit pas à
+identifier une personne dans un écosystème multi-opérateurs/multi-pays comme celui de
+Clapay (un même individu peut avoir un compte Orange Money en Côte d'Ivoire et un compte
+M-Pesa au Kenya). `Customer.national_id` (`modules/transaction_monitoring/models.py`) porte
+donc un identifiant KYC interne, renseigné uniquement pour `kyc_level != "basic"` (KYC
+basique = vérification SMS seule, pas de pièce d'identité collectée — réaliste, cf.
+`KYC_WEIGHTS` dans `scripts/generate_synthetic_data.py`). Deux comptes qui partagent le même
+`national_id` désignent la même personne. Le graphe et l'écran Investigation utilisent cet
+identifiant quand il existe, sinon retombent sur le téléphone — jamais l'inverse.
+
+```bash
+cd ../Frontend
+npm install
+npm run dev  # http://localhost:5173 (ou le port suivant si occupé)
+```
+
+`VITE_API_BASE_URL` permet de pointer vers un autre backend qu'en local. Le backend autorise
+tout `http://localhost:<port>` / `http://127.0.0.1:<port>` en CORS (`main.py`,
+`allow_origin_regex`) car Vite change de port silencieusement s'il en trouve un déjà occupé.
+
+**Peupler la base avec des données de démo** (transactions réalistes des 7 derniers jours,
+via le vrai pipeline règles + ML, pour que le dashboard ne soit pas vide) :
+
+```bash
+venv/Scripts/python.exe scripts/seed_admin_dashboard.py
+```
+
+Inclut volontairement quelques clients KYC complet possédant deux comptes (numéros/
+opérateurs/pays différents) partageant le même `national_id`, pour illustrer le cas
+d'identité inter-réseaux ci-dessus.
 
 ## Démarrage rapide
 
@@ -204,23 +268,25 @@ démarrage du serveur.
 
 ## Résultats du modèle ML
 
-Sur le dataset synthétique (≈1500 clients répartis sur **18 pays**, ≈150 agents, ≈519 000
-transactions sur **12 mois**, 10 scénarios de fraude + 1 scénario centré agent, jeu de
-test = 20 %) :
+Sur le dataset synthétique (≈1500 clients répartis sur **18 pays**, ≈150 agents,
+≈520 000 transactions sur **12 mois**, 11 scénarios de fraude par client + 1 scénario
+centré agent en 2 variantes (dépôt/retrait), jeu de test = 20 %) :
 
 | Métrique | Valeur |
 |---|---|
-| AUC-ROC | 1.000 |
-| AUC-PR | 0.99 |
-| Recall (seuil 0.5) | 0.99 |
-| Precision (seuil 0.5) | 0.60 |
+| AUC-ROC | 0.9997 |
+| AUC-PR | 0.98 |
+| Recall (seuil 0.5) | 0.98 |
+| Precision (seuil 0.5) | 0.63 |
 
 Les variables les plus influentes selon SHAP : type de transaction, montant moyen habituel
-du client, bénéficiaire connu/inconnu, écart par rapport à l'habitude, cumul sur 1h, montant
-(équivalent XOF), délai depuis la dernière réception (transit transfrontalier), taille du
-lot de paiement de masse. La precision est passée de 0.28 à 0.60 par rapport à la version
-précédente : les nouveaux signaux (appareil, solde, agent) rendent la fraude nettement plus
-séparable, en plus d'un taux de fraude simulé plus élevé du fait des nouveaux scénarios.
+du client, bénéficiaire connu/inconnu, écart par rapport à l'habitude, montant (équivalent
+XOF), cumul sur 1h. `is_new_device`, `minutes_since_last_incoming` et `batch_size_so_far`
+figurent aussi dans le top 10 — le modèle exploite bien les signaux appareil/transit/batch,
+pas seulement montant/vélocité. La fraude était initialement concentrée à 100% sur `transfer`
+et `withdrawal` (angle mort identifié en revue) ; elle couvre maintenant aussi `deposit` et
+`merchant_payment` — `bill_payment`/`airtime_purchase` restent un angle mort assumé (volume
+plus faible, pas de schéma majeur documenté par le GSMA pour ces deux types).
 
 ## Limites connues et prochaines étapes
 
@@ -237,10 +303,6 @@ séparable, en plus d'un taux de fraude simulé plus élevé du fait des nouveau
   individuellement assez distincts des transactions normales, d'où un AUC-ROC très élevé.
   Avec des données réelles de pilote, un recalibrage des seuils et un backtesting seront
   nécessaires (cf. feuille de route produit, Phase 2 - V1 Pilote).
-- **Soldes simulés, pas réels** : `balance_before_sender`/`balance_after_sender` sont
-  reconstitués par un ledger cohérent rejoué par client (inspiré de PaySim/MoMTSim), pas des
-  soldes réels de portefeuille Clapay. En production, ces champs seraient transmis par le
-  système appelant s'il les connaît ; Novaris ne les invente jamais quand ils sont absents.
 - **Pas de frontend** : ce dépôt est backend uniquement ; le dashboard analyste (React,
   prévu par la feuille de route) n'est pas dans ce périmètre.
 - **Un seul module actif** : les 13 autres modules de la vision Novaris AI restent à l'état
