@@ -83,3 +83,34 @@ export interface DashboardTrendPoint {
   alerts: number;
   average_score: number;
 }
+
+export interface NetworkNode {
+  id: string;
+  label: string;
+  type: "customer" | "agent" | "device";
+  identity_verified: boolean;
+  country: string | null;
+  transaction_count: number;
+  max_risk_level: RiskLevel;
+  flagged: boolean;
+}
+
+export interface NetworkEdge {
+  id: string;
+  source: string;
+  target: string;
+  kind: "transaction" | "agent" | "device";
+  transaction_id: string | null;
+  amount: number | null;
+  currency: string | null;
+  transaction_type: string | null;
+  decision: Decision | null;
+  risk_level: RiskLevel | null;
+  created_at: string | null;
+}
+
+export interface NetworkGraph {
+  nodes: NetworkNode[];
+  edges: NetworkEdge[];
+  truncated: boolean;
+}

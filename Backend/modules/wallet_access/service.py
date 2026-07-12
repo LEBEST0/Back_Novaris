@@ -526,6 +526,8 @@ class WalletAccessService:
             channel="mobile_app",
             device_id=primary_device.device_fingerprint if primary_device else None,
             note=payload.reason,
+            behaviour_time_to_complete_ms=payload.behaviour_time_to_complete_ms,
+            behaviour_amount_field_edits=payload.behaviour_amount_field_edits,
         )
         analysis = TransactionMonitoringService(self.db).analyze(txn_payload)
 

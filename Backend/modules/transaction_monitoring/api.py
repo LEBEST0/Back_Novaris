@@ -8,6 +8,7 @@ from modules.transaction_monitoring.schemas import (
     DashboardKpisOut,
     DashboardTrendPointOut,
     FeedbackIn,
+    NetworkGraphOut,
     TransactionAnalysisOut,
     TransactionIn,
 )
@@ -30,6 +31,15 @@ def list_transactions(limit: int = 50, offset: int = 0, db: Session = Depends(ge
     limit = max(1, min(limit, 200))
     transactions = TransactionRepository(db).list_transactions(limit=limit, offset=offset)
     return [transaction_to_analysis_out(t, db) for t in transactions if t.analysis]
+
+
+@router.get("/network", response_model=NetworkGraphOut)
+def get_network_graph(limit: int = 500, db: Session = Depends(get_db)):
+    """Graphe réseau construit à partir de TOUTES les transactions récentes (pas une
+    seule) — nœuds clients/agents/devices, arêtes = transactions. Doit être déclaré avant
+    /{transaction_id} pour ne pas être capturé par la route générique."""
+    limit = max(1, min(limit, 2000))
+    return TransactionMonitoringService(db).build_network_graph(limit=limit)
 
 
 @router.get("/{transaction_id}", response_model=TransactionAnalysisOut)

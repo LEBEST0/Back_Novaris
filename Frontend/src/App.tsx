@@ -3,9 +3,9 @@ import { AppLayout, type Screen } from "./layout/AppLayout";
 import { Dashboard } from "./features/dashboard/Dashboard";
 import { Analysis } from "./features/analysis/Analysis";
 import { Investigation } from "./features/investigation/Investigation";
-import { FraudGraph } from "./features/graph/FraudGraph";
+import { GraphScreen } from "./features/graph/GraphScreen";
 import { Report } from "./features/report/Report";
-import { analyzeTransaction, fetchRecentTransactions, submitFeedback } from "./services/api";
+import { analyzeTransaction, fetchRecentTransactions, fetchTransaction, submitFeedback } from "./services/api";
 import type { AnalystFeedback, TransactionAnalysis, TransactionRequest } from "./types";
 
 export function App() {
@@ -65,6 +65,10 @@ export function App() {
     setScreen("investigation");
   };
 
+  const selectTransactionById = (transactionId: string) => {
+    fetchTransaction(transactionId).then(setCurrent);
+  };
+
   const content = useMemo(() => {
     if (loading) {
       return <div className="panel loading-panel">Chargement du poste de contrôle...</div>;
@@ -93,11 +97,7 @@ export function App() {
       ) : (
         <div className="panel loading-panel">Aucune transaction sélectionnée. Lancez une analyse ou ouvrez une alerte depuis le dashboard.</div>
       ),
-      graph: current ? (
-        <FraudGraph current={current} />
-      ) : (
-        <div className="panel loading-panel">Aucune transaction sélectionnée.</div>
-      ),
+      graph: <GraphScreen current={current} onSelectTransaction={selectTransactionById} />,
       report: current ? (
         <Report current={current} />
       ) : (

@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from modules.transaction_monitoring.feature_engineering import HistoryEntry, IncomingEntry
 from modules.transaction_monitoring.models import Customer, Transaction, TransactionAnalysis
@@ -168,6 +168,24 @@ class TransactionRepository:
                 .offset(offset)
             )
         )
+
+    def list_transactions_for_network(self, limit: int = 500) -> list[Transaction]:
+        """Toutes les transactions récentes (avec émetteur + analyse préchargés) pour
+        construire le graphe réseau complet — pas juste une transaction isolée."""
+        return list(
+            self.db.scalars(
+                select(Transaction)
+                .options(selectinload(Transaction.sender), selectinload(Transaction.analysis))
+                .order_by(Transaction.created_at.desc())
+                .limit(limit)
+            )
+        )
+
+    def get_customers_by_phones(self, phones: set[str]) -> dict[str, Customer]:
+        if not phones:
+            return {}
+        rows = self.db.scalars(select(Customer).where(Customer.phone.in_(phones))).all()
+        return {c.phone: c for c in rows}
 
     def set_feedback(self, transaction_id: str, *, feedback: str, note: str | None) -> Transaction | None:
         transaction = self.get_transaction(transaction_id)

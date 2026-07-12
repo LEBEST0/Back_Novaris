@@ -158,6 +158,11 @@ class TransferConfirmIn(BaseModel):
     beneficiary_id: str
     amount: float = Field(gt=0)
     reason: str | None = None
+    # Comportement observé par Amani Wallet pendant la préparation de CE transfert (pas le
+    # profil habituel du client) — relayé tel quel à Transaction Monitoring, qui décide
+    # seul de son importance (cf. TRANSACTION_BEHAVIOUR_ANOMALY).
+    behaviour_time_to_complete_ms: int | None = None
+    behaviour_amount_field_edits: int | None = None
 
 
 class TransferConfirmOut(BaseModel):

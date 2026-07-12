@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { AlertTriangle, ArrowLeft, CheckCircle2, Clock } from "lucide-react";
 import { confirmTransfer, prepareTransfer } from "../lib/api";
 import type { Beneficiary, TransferConfirmResult, TransferPrepareResult } from "../types";
@@ -30,6 +30,17 @@ export function TransferPrepare({ userId, beneficiary, onBack, onChooseBeneficia
   const [submitting, setSubmitting] = useState(false);
   const [confirming, setConfirming] = useState(false);
 
+  // Comportement observé côté client pour CE transfert, envoyé à Novaris avec la
+  // transaction (voir règle TRANSACTION_BEHAVIOUR_ANOMALY côté backend). Ni stocké
+  // ni affiché ailleurs dans l'UI.
+  const formOpenedAt = useRef(Date.now());
+  const amountEditCount = useRef(0);
+
+  const handleAmountChange = (value: string) => {
+    amountEditCount.current += 1;
+    setAmount(value);
+  };
+
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!beneficiary) return;
@@ -60,6 +71,8 @@ export function TransferPrepare({ userId, beneficiary, onBack, onChooseBeneficia
         beneficiary_id: beneficiary.id,
         amount: Number(amount),
         reason: reason || undefined,
+        behaviour_time_to_complete_ms: Date.now() - formOpenedAt.current,
+        behaviour_amount_field_edits: amountEditCount.current,
       });
       setConfirmResult(result);
     } catch (err) {
@@ -153,7 +166,7 @@ export function TransferPrepare({ userId, beneficiary, onBack, onChooseBeneficia
       <form className="screen" style={{ padding: 0, gap: 16 }} onSubmit={handleSubmit}>
         <div className="field">
           <label>Montant (F CFA)</label>
-          <input type="number" min={1} value={amount} onChange={(e) => setAmount(e.target.value)} required />
+          <input type="number" min={1} value={amount} onChange={(e) => handleAmountChange(e.target.value)} required />
         </div>
         <div className="field">
           <label>Motif (optionnel)</label>

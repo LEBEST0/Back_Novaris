@@ -11,12 +11,16 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title=settings.app_name)
 
-# Le dashboard admin (Vite) tourne sur un port différent en dev — CORS ouvert à tout port
-# localhost/127.0.0.1 (Vite change de port tout seul si 5173 est déjà occupé). À restreindre
-# à l'origine réelle du dashboard en production.
+# Dev local : tout port localhost/127.0.0.1 (Vite change de port tout seul si 5173 est
+# déjà occupé). Production : les deux frontends déployés sur Vercel, en autorisant aussi
+# les URLs de preview (*.vercel.app) pour ne pas casser le déploiement à chaque nouveau hash.
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
+    allow_origins=[
+        "https://backnovaris.vercel.app",
+        "https://novaris-amani-wallet.vercel.app",
+    ],
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1):\d+$|^https://[a-z0-9-]+\.vercel\.app$",
     allow_methods=["*"],
     allow_headers=["*"],
 )

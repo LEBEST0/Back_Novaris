@@ -33,6 +33,15 @@ BALANCE_DRAINED_THRESHOLD_XOF = 500.0
 # est suspect (évite un faux positif sur la toute première transaction d'un lot légitime).
 BATCH_MIN_LEGS_BEFORE_CHECK = 3
 
+# Comportement de saisie côté canal appelant (ex. Amani Wallet), transmis en option — pas
+# une variable ML (dataset synthétique non ré-entraîné avec ce signal), seulement une
+# règle auditable. En dessous de ce seuil, une confirmation de transfert est implausible
+# pour un humain qui relit un récapitulatif (plutôt un envoi scripté/automatisé).
+BEHAVIOUR_VERY_FAST_MS_THRESHOLD = 2500
+# Au-delà, le nombre de modifications du champ montant avant confirmation devient un
+# signal d'hésitation ou de guidage externe (ingénierie sociale) plutôt qu'une simple saisie.
+BEHAVIOUR_EXCESSIVE_EDITS_THRESHOLD = 8
+
 
 @dataclass
 class HistoryEntry:
@@ -99,6 +108,13 @@ class ContextFeatures:
     kyc_level: str
     transaction_type: str
     channel: str
+    # Comportement de saisie (optionnel, cf. BEHAVIOUR_VERY_FAST_MS_THRESHOLD ci-dessus) —
+    # utilisé uniquement par une règle auditable, jamais par le modèle ML (absent de
+    # to_dict) : le dataset synthétique d'entraînement ne porte pas ce signal.
+    behaviour_time_to_complete_ms: float | None
+    behaviour_amount_field_edits: int | None
+    behaviour_very_fast: bool
+    behaviour_excessive_edits: bool
 
     def to_dict(self) -> dict:
         return {
@@ -153,6 +169,8 @@ def compute_context_features(
     balance_after_sender: float | None = None,
     agent_tx_count_last_1h: int = 0,
     agent_distinct_senders_last_1h: int = 0,
+    behaviour_time_to_complete_ms: int | None = None,
+    behaviour_amount_field_edits: int | None = None,
 ) -> ContextFeatures:
     """prior_history doit contenir uniquement les transactions du même émetteur
     strictement antérieures à `timestamp` (triées ou non, peu importe ici), avec des
@@ -264,6 +282,15 @@ def compute_context_features(
         and amount_xof_equivalent > BALANCE_DRAINED_THRESHOLD_XOF
     )
 
+    behaviour_very_fast = bool(
+        behaviour_time_to_complete_ms is not None
+        and behaviour_time_to_complete_ms < BEHAVIOUR_VERY_FAST_MS_THRESHOLD
+    )
+    behaviour_excessive_edits = bool(
+        behaviour_amount_field_edits is not None
+        and behaviour_amount_field_edits > BEHAVIOUR_EXCESSIVE_EDITS_THRESHOLD
+    )
+
     return ContextFeatures(
         amount=amount,
         currency=currency,
@@ -296,4 +323,10 @@ def compute_context_features(
         kyc_level=kyc_level,
         transaction_type=transaction_type,
         channel=channel,
+        behaviour_time_to_complete_ms=(
+            float(behaviour_time_to_complete_ms) if behaviour_time_to_complete_ms is not None else None
+        ),
+        behaviour_amount_field_edits=behaviour_amount_field_edits,
+        behaviour_very_fast=behaviour_very_fast,
+        behaviour_excessive_edits=behaviour_excessive_edits,
     )

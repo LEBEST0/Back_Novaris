@@ -5,10 +5,20 @@ from sqlalchemy.orm import Session
 from core.decision_engine import aggregate_final_score, compute_confidence, decide
 from modules.transaction_monitoring import ml, rules
 from modules.transaction_monitoring.feature_engineering import compute_context_features
+from modules.transaction_monitoring.models import Customer
 from modules.transaction_monitoring.presenters import transaction_to_analysis_out
 from modules.transaction_monitoring.repository import TransactionRepository
-from modules.transaction_monitoring.schemas import TransactionAnalysisOut, TransactionIn
+from modules.transaction_monitoring.schemas import (
+    NetworkEdgeOut,
+    NetworkGraphOut,
+    NetworkNodeOut,
+    TransactionAnalysisOut,
+    TransactionIn,
+)
 from shared.utils.phone import country_from_phone, currency_for_country
+
+RISK_ORDER = ["low", "moderate", "high", "critical"]
+FLAGGED_DECISIONS = {"REVIEW", "TEMPORARY_BLOCK"}
 
 
 class TransactionMonitoringService:
@@ -57,6 +67,8 @@ class TransactionMonitoringService:
             balance_after_sender=payload.balance_after_sender,
             agent_tx_count_last_1h=agent_tx_count_last_1h,
             agent_distinct_senders_last_1h=agent_distinct_senders_last_1h,
+            behaviour_time_to_complete_ms=payload.behaviour_time_to_complete_ms,
+            behaviour_amount_field_edits=payload.behaviour_amount_field_edits,
         )
 
         rule_results = rules.evaluate_rules(features)
@@ -96,3 +108,88 @@ class TransactionMonitoringService:
         )
 
         return transaction_to_analysis_out(transaction, self.db)
+
+    def build_network_graph(self, limit: int = 500) -> NetworkGraphOut:
+        """Graphe réseau complet — toutes les transactions récentes, pas une seule. Un
+        client avec KYC complet est identifié par son national_id (résolution d'identité
+        inter-réseaux) : deux comptes qui le partagent fusionnent naturellement en un seul
+        nœud, même sur des opérateurs/pays différents."""
+        transactions = self.repo.list_transactions_for_network(limit=limit)
+        truncated = len(transactions) >= limit
+
+        receiver_phones = {t.receiver_phone for t in transactions}
+        receiver_customers = self.repo.get_customers_by_phones(receiver_phones)
+
+        def identity_key(phone: str, customer: Customer | None) -> tuple[str, str, bool]:
+            if customer and customer.national_id:
+                return customer.national_id, customer.national_id, True
+            return phone, phone, False
+
+        nodes: dict[str, NetworkNodeOut] = {}
+        edges: list[NetworkEdgeOut] = []
+
+        def upsert_node(
+            key: str, label: str, type_: str, *, identity_verified: bool = False,
+            country: str | None = None, risk_level: str = "low", flagged: bool = False,
+        ) -> None:
+            node = nodes.get(key)
+            if node is None:
+                nodes[key] = NetworkNodeOut(
+                    id=key, label=label, type=type_, identity_verified=identity_verified,
+                    country=country, transaction_count=1, max_risk_level=risk_level, flagged=flagged,
+                )
+                return
+            node.transaction_count += 1
+            if RISK_ORDER.index(risk_level) > RISK_ORDER.index(node.max_risk_level):
+                node.max_risk_level = risk_level
+            node.flagged = node.flagged or flagged
+
+        for t in transactions:
+            analysis = t.analysis
+            if analysis is None:
+                continue
+            flagged = analysis.decision in FLAGGED_DECISIONS
+
+            sender_key, sender_label, sender_verified = identity_key(t.sender_phone, t.sender)
+            receiver_customer = receiver_customers.get(t.receiver_phone)
+            receiver_key, receiver_label, receiver_verified = identity_key(t.receiver_phone, receiver_customer)
+
+            upsert_node(
+                sender_key, sender_label, "customer", identity_verified=sender_verified,
+                country=t.sender.country, risk_level=analysis.risk_level, flagged=flagged,
+            )
+            upsert_node(
+                receiver_key, receiver_label, "customer", identity_verified=receiver_verified,
+                country=country_from_phone(t.receiver_phone), risk_level=analysis.risk_level, flagged=flagged,
+            )
+            edges.append(NetworkEdgeOut(
+                id=f"edge-{t.transaction_id}",
+                source=sender_key,
+                target=receiver_key,
+                kind="transaction",
+                transaction_id=t.transaction_id,
+                amount=t.amount,
+                currency=t.currency,
+                transaction_type=t.transaction_type,
+                decision=analysis.decision,
+                risk_level=analysis.risk_level,
+                created_at=t.created_at.isoformat(),
+            ))
+
+            if t.agent_id:
+                agent_key = f"agent:{t.agent_id}"
+                upsert_node(agent_key, t.agent_id, "agent", risk_level=analysis.risk_level if flagged else "low", flagged=flagged)
+                edges.append(NetworkEdgeOut(
+                    id=f"edge-{t.transaction_id}-agent", source=sender_key, target=agent_key,
+                    kind="agent", transaction_id=t.transaction_id,
+                ))
+
+            if t.device_id:
+                device_key = f"device:{t.device_id[:16]}"
+                upsert_node(device_key, f"{t.device_id[:10]}…", "device", risk_level=analysis.risk_level if flagged else "low", flagged=flagged)
+                edges.append(NetworkEdgeOut(
+                    id=f"edge-{t.transaction_id}-device", source=sender_key, target=device_key,
+                    kind="device", transaction_id=t.transaction_id,
+                ))
+
+        return NetworkGraphOut(nodes=list(nodes.values()), edges=edges, truncated=truncated)
