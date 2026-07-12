@@ -116,9 +116,12 @@ class AccessEventOut(BaseModel):
 
 
 class BeneficiaryIn(BaseModel):
+    """Un client ajoute un bénéficiaire par nom + téléphone, comme dans un vrai Mobile
+    Money — le numéro de wallet interne n'est pas quelque chose que l'utilisateur connaît
+    ou doit saisir ; il est résolu/attribué côté serveur."""
+
     full_name: str
     phone: str
-    wallet_number: str
 
 
 class BeneficiaryOut(BaseModel):
@@ -150,14 +153,29 @@ class TransferPrepareOut(BaseModel):
     note: str = "Aucun transfert réel n'est effectué à cette étape (démonstration Novaris AI)."
 
 
+class TransferConfirmIn(BaseModel):
+    user_id: str
+    beneficiary_id: str
+    amount: float = Field(gt=0)
+    reason: str | None = None
+    # Comportement observé par Amani Wallet pendant la préparation de CE transfert (pas le
+    # profil habituel du client) — relayé tel quel à Transaction Monitoring, qui décide
+    # seul de son importance (cf. TRANSACTION_BEHAVIOUR_ANOMALY).
+    behaviour_time_to_complete_ms: int | None = None
+    behaviour_amount_field_edits: int | None = None
+
+
+class TransferConfirmOut(BaseModel):
+    wallet_transaction_id: str
+    status: str  # COMPLETED | PENDING | BLOCKED
+    message: str
+
+
 class DashboardOut(BaseModel):
     full_name: str
     balance: float
     wallet_number_masked: str
     last_operations: list[dict]
-    session_secured: bool
-    device_recognized: bool
-    last_verification_at: datetime | None
 
 
 class HistoryEntryOut(BaseModel):

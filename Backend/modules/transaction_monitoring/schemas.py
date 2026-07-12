@@ -41,6 +41,17 @@ class TransactionIn(BaseModel):
         default=None,
         description="Solde du portefeuille de l'émetteur après la transaction, si connu du système appelant.",
     )
+    behaviour_time_to_complete_ms: int | None = Field(
+        default=None,
+        description=(
+            "Temps entre l'ouverture du formulaire de transaction et sa confirmation par "
+            "le client, si mesuré par le canal appelant (ex. Amani Wallet)."
+        ),
+    )
+    behaviour_amount_field_edits: int | None = Field(
+        default=None,
+        description="Nombre de modifications du champ montant avant confirmation, si mesuré par le canal appelant.",
+    )
 
     @field_validator("transaction_type")
     @classmethod
@@ -131,6 +142,37 @@ class DashboardTrendPointOut(BaseModel):
     transactions_analyzed: int
     alerts: int
     average_score: float
+
+
+class NetworkNodeOut(BaseModel):
+    id: str
+    label: str
+    type: str  # "customer" | "agent" | "device"
+    identity_verified: bool = False
+    country: str | None = None
+    transaction_count: int = 0
+    max_risk_level: str = "low"
+    flagged: bool = False  # au moins une transaction REVIEW/TEMPORARY_BLOCK impliquant ce nœud
+
+
+class NetworkEdgeOut(BaseModel):
+    id: str
+    source: str
+    target: str
+    kind: str  # "transaction" | "agent" | "device"
+    transaction_id: str | None = None
+    amount: float | None = None
+    currency: str | None = None
+    transaction_type: str | None = None
+    decision: str | None = None
+    risk_level: str | None = None
+    created_at: str | None = None
+
+
+class NetworkGraphOut(BaseModel):
+    nodes: list[NetworkNodeOut]
+    edges: list[NetworkEdgeOut]
+    truncated: bool = False
 
 
 class CustomerIn(BaseModel):

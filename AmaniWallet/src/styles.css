@@ -48,12 +48,14 @@ button {
 
 .app-viewport {
   max-width: 430px;
-  min-height: 100vh;
+  height: 100vh;
   margin: 0 auto;
   background: var(--bg);
   display: flex;
   flex-direction: column;
   position: relative;
+  overflow-x: hidden;
+  overflow-y: auto;
   box-shadow: var(--shadow);
 }
 
@@ -63,9 +65,8 @@ button {
     padding: 24px 0;
   }
   .app-viewport {
-    min-height: calc(100vh - 48px);
+    height: calc(100vh - 48px);
     border-radius: 28px;
-    overflow: hidden;
   }
 }
 

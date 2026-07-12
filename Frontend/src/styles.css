@@ -2062,6 +2062,129 @@ label span {
   line-height: 1.55;
 }
 
+.graph-tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.graph-tabs button {
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.graph-tabs button.is-active {
+  border-color: var(--cyan);
+  color: var(--cyan);
+  background: rgba(47, 209, 201, 0.08);
+}
+
+.graph-tabs button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.graph-network-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.graph-network-summary span {
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(20, 27, 38, 0.6);
+  color: var(--muted);
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.network-svg-wrap {
+  position: relative;
+}
+
+.network-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.network-edge {
+  cursor: pointer;
+  transition: stroke-width 120ms ease, opacity 120ms ease;
+}
+
+.network-edge:hover {
+  opacity: 1 !important;
+  stroke-width: 2.4 !important;
+}
+
+.network-node-g {
+  cursor: pointer;
+}
+
+/* Pas de `filter: drop-shadow` ici : un filtre SVG force un rasterisage séparé par
+   élément — inabordable appliqué simultanément à des centaines de nœuds. Le survol/l'état
+   signalé se voient déjà via strokeWidth (fixé en JS), pas besoin d'effet supplémentaire. */
+
+.network-tooltip {
+  position: absolute;
+  z-index: 20;
+  width: 240px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(11, 14, 20, 0.97);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+.network-tooltip strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--cyan);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.network-tooltip dl {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+}
+
+.network-tooltip dl > div {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 6px;
+}
+
+.network-tooltip dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.network-tooltip dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.network-tooltip-hint {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: italic;
+}
+
 .graph-circle-node {
   position: relative;
   display: grid;

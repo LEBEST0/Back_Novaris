@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowDownToLine, ArrowUpRight, CreditCard, ShieldCheck, Wallet } from "lucide-react";
+import { ArrowDownToLine, ArrowUpRight, CreditCard, Wallet } from "lucide-react";
 import { fetchDashboard } from "../lib/api";
 import { BottomNav, type NavScreen } from "../components/BottomNav";
 import type { DashboardData } from "../types";
@@ -70,17 +70,6 @@ export function Dashboard({ userId, onNavigate, onSend }: DashboardProps) {
         <span className="label">Solde disponible</span>
         <span className="amount">{formatXof(data.balance)}</span>
         <span className="wallet-number">{data.wallet_number_masked}</span>
-      </div>
-
-      <div className={`security-status ${data.session_secured ? "" : "warning"}`}>
-        <ShieldCheck size={18} aria-hidden="true" />
-        <div>
-          <strong>{data.session_secured ? "Session sécurisée" : "Session sous surveillance"}</strong>
-          <div>
-            {data.device_recognized ? "Appareil reconnu" : "Nouvel appareil"} · Dernière vérification :{" "}
-            {data.last_verification_at ? new Date(data.last_verification_at).toLocaleString("fr-FR") : "—"}
-          </div>
-        </div>
       </div>
 
       <div className="quick-actions">

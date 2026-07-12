@@ -7,10 +7,14 @@ import type {
   LoginPayload,
   Profile,
   RegisterPayload,
+  TransferConfirmResult,
   TransferPrepareResult,
 } from "../types";
 
-const API_BASE_URL = import.meta.env.VITE_NOVARIS_RISK_ENGINE_URL ?? "http://127.0.0.1:8010";
+// En dev, le backend tourne en local sur le port 8010. En production (Vercel),
+// VITE_NOVARIS_RISK_ENGINE_URL doit pointer vers l'origine réelle du backend — à défaut,
+// on retombe sur le backend Render déployé plutôt que sur localhost.
+const API_BASE_URL = import.meta.env.VITE_NOVARIS_RISK_ENGINE_URL ?? "https://back-novaris.onrender.com";
 
 export class ApiUnavailableError extends Error {}
 
@@ -74,7 +78,7 @@ export function fetchBeneficiaries(userId: string): Promise<Beneficiary[]> {
 
 export function addBeneficiary(
   userId: string,
-  payload: { full_name: string; phone: string; wallet_number: string },
+  payload: { full_name: string; phone: string },
 ): Promise<Beneficiary> {
   return request<Beneficiary>(`/api/v1/wallet/beneficiaries?user_id=${encodeURIComponent(userId)}`, {
     method: "POST",
@@ -89,6 +93,20 @@ export function prepareTransfer(payload: {
   reason?: string;
 }): Promise<TransferPrepareResult> {
   return request<TransferPrepareResult>("/api/v1/wallet/transfer/prepare", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function confirmTransfer(payload: {
+  user_id: string;
+  beneficiary_id: string;
+  amount: number;
+  reason?: string;
+  behaviour_time_to_complete_ms?: number;
+  behaviour_amount_field_edits?: number;
+}): Promise<TransferConfirmResult> {
+  return request<TransferConfirmResult>("/api/v1/wallet/transfer/confirm", {
     method: "POST",
     body: JSON.stringify(payload),
   });

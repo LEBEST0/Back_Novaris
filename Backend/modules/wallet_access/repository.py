@@ -19,6 +19,7 @@ from shared.utils.id_generator import (
     generate_event_id,
     generate_session_id,
     generate_user_id,
+    generate_wallet_transaction_id,
 )
 
 
@@ -216,7 +217,23 @@ class WalletAccessRepository:
         self.db.flush()
         return beneficiary
 
-    # --- Transactions (fictives) -------------------------------------------------------
+    # --- Transactions (fictives côté wallet, notées à partir de la vraie analyse
+    # transaction_monitoring — cf. WalletAccessService.confirm_transfer) -------------------
+    def create_wallet_transaction(
+        self, *, user_id: str, beneficiary_id: str | None, amount: float, type_: str, status: str
+    ) -> WalletTransaction:
+        transaction = WalletTransaction(
+            id=generate_wallet_transaction_id(),
+            user_id=user_id,
+            beneficiary_id=beneficiary_id,
+            amount=amount,
+            type=type_,
+            status=status,
+        )
+        self.db.add(transaction)
+        self.db.flush()
+        return transaction
+
     def list_transactions(self, user_id: str, limit: int = 50) -> list[WalletTransaction]:
         return list(
             self.db.scalars(

@@ -203,6 +203,32 @@ def _r_merchant_layering(f: ContextFeatures) -> RuleResult:
     return RuleResult("MERCHANT_LAYERING_SIGNAL", desc, 35.0, triggered)
 
 
+def _r_transaction_behaviour_anomaly(f: ContextFeatures) -> RuleResult:
+    # Comportement de saisie transmis par le canal appelant (ex. Amani Wallet) pendant la
+    # préparation de CETTE transaction — pas le profil habituel du client (déjà couvert par
+    # d'autres modules), mais un signal ponctuel : une confirmation trop rapide pour être
+    # une lecture humaine du récapitulatif évoque un envoi scripté ; un nombre inhabituel de
+    # modifications du montant évoque une hésitation ou un guidage externe (ingénierie
+    # sociale en cours). Absent si le canal ne transmet pas ces mesures (mobile/web only).
+    triggered = f.behaviour_very_fast or f.behaviour_excessive_edits
+    if f.behaviour_very_fast and f.behaviour_excessive_edits:
+        desc = (
+            f"Transaction confirmée en {f.behaviour_time_to_complete_ms:.0f} ms avec "
+            f"{f.behaviour_amount_field_edits} modifications du montant — incohérent avec une saisie humaine normale"
+        )
+    elif f.behaviour_very_fast:
+        desc = (
+            f"Transaction confirmée en seulement {f.behaviour_time_to_complete_ms:.0f} ms "
+            f"— trop rapide pour une relecture humaine du récapitulatif, signe probable d'envoi automatisé"
+        )
+    else:
+        desc = (
+            f"{f.behaviour_amount_field_edits} modifications du montant avant confirmation "
+            f"— hésitation inhabituelle, éventuellement un signe de guidage externe"
+        )
+    return RuleResult("TRANSACTION_BEHAVIOUR_ANOMALY", desc, 20.0, triggered)
+
+
 def _r_account_drained(f: ContextFeatures) -> RuleResult:
     # Solde qui tombe à (quasi) zéro après la transaction : signal fortement prédictif
     # documenté par les travaux de référence sur la simulation Mobile Money (PaySim,
@@ -230,6 +256,7 @@ RULES = [
     _r_agent_collusion_cashout,
     _r_account_drained,
     _r_merchant_layering,
+    _r_transaction_behaviour_anomaly,
 ]
 
 
