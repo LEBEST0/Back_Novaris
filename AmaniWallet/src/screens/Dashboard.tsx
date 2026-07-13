@@ -8,6 +8,8 @@ interface DashboardProps {
   userId: string;
   onNavigate: (screen: NavScreen) => void;
   onSend: () => void;
+  onDeposit: () => void;
+  onWithdraw: () => void;
 }
 
 function formatXof(amount: number): string {
@@ -29,7 +31,7 @@ function statusLabel(status: string): { text: string; className: string } {
   }
 }
 
-export function Dashboard({ userId, onNavigate, onSend }: DashboardProps) {
+export function Dashboard({ userId, onNavigate, onSend, onDeposit, onWithdraw }: DashboardProps) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -79,7 +81,7 @@ export function Dashboard({ userId, onNavigate, onSend }: DashboardProps) {
           </span>
           Envoyer
         </button>
-        <button type="button" className="quick-action" onClick={() => onNavigate("history")}>
+        <button type="button" className="quick-action" onClick={onDeposit}>
           <span className="icon-circle">
             <ArrowDownToLine size={18} />
           </span>
@@ -91,7 +93,7 @@ export function Dashboard({ userId, onNavigate, onSend }: DashboardProps) {
           </span>
           Payer
         </button>
-        <button type="button" className="quick-action" onClick={() => onNavigate("history")}>
+        <button type="button" className="quick-action" onClick={onWithdraw}>
           <span className="icon-circle">
             <Wallet size={18} />
           </span>

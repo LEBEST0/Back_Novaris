@@ -49,12 +49,14 @@ HISTORY_WINDOW_DAYS = 30
 
 
 def build_incoming_index(transactions: pd.DataFrame) -> dict[str, tuple[list, list]]:
-    """Index global (tous émetteurs confondus) des transactions reçues par chaque
-    numéro, trié par date, pour retrouver rapidement (recherche binaire) la dernière
-    transaction entrante avant un instant donné — utilisé pour la détection de transit
-    transfrontalier (reçu d'un pays, renvoyé vers un autre)."""
+    """Index global (tous émetteurs confondus) des transferts reçus par chaque numéro,
+    trié par date, pour retrouver rapidement (recherche binaire) l'historique entrant
+    avant un instant donné — utilisé pour la détection de transit transfrontalier et de
+    cycles type compte mule (cf. feature_engineering.compute_passthrough_cycles). Filtré
+    sur les transferts (pas les dépôts, déjà couverts par l'historique propre du client)."""
     index: dict[str, tuple[list, list]] = {}
-    for receiver_phone, group in transactions.groupby("receiver_phone", sort=False):
+    transfers = transactions[transactions["transaction_type"] == "transfer"]
+    for receiver_phone, group in transfers.groupby("receiver_phone", sort=False):
         group = group.sort_values("timestamp")
         timestamps = list(group["timestamp"])
         entries = [
@@ -63,6 +65,7 @@ def build_incoming_index(transactions: pd.DataFrame) -> dict[str, tuple[list, li
                 amount_xof_equivalent=to_xof_equivalent(row.amount, row.currency),
                 created_at=row.timestamp,
                 transaction_type=row.transaction_type,
+                sender_phone=row.sender_phone,
             )
             for row in group.itertuples()
         ]
@@ -70,39 +73,17 @@ def build_incoming_index(transactions: pd.DataFrame) -> dict[str, tuple[list, li
     return index
 
 
-def build_agent_index(transactions: pd.DataFrame) -> dict[str, tuple[list, list]]:
-    """Index global des transactions par agent (triées par date), pour calculer en
-    O(log n) le volume et la diversité de clients traités par un agent dans l'heure
-    précédente (cf. rules.AGENT_COLLUSION_CASHOUT)."""
-    index: dict[str, tuple[list, list]] = {}
-    agent_txs = transactions[transactions["agent_id"].notna()]
-    for agent_id, group in agent_txs.groupby("agent_id", sort=False):
-        group = group.sort_values("timestamp")
-        index[agent_id] = (list(group["timestamp"]), list(group["sender_phone"]))
-    return index
-
-
-def agent_recent_activity(agent_id, timestamp, agent_index: dict) -> tuple[int, int]:
-    if not isinstance(agent_id, str) or agent_id not in agent_index:
-        return 0, 0
-    timestamps, senders = agent_index[agent_id]
-    window_start = timestamp - timedelta(hours=1)
-    lo = bisect.bisect_left(timestamps, window_start)
-    hi = bisect.bisect_left(timestamps, timestamp)
-    return hi - lo, len(set(senders[lo:hi]))
-
-
 def build_feature_dataset(transactions: pd.DataFrame) -> pd.DataFrame:
     """Rejoue chaque client en ordre chronologique avec une fenêtre glissante de 30
     jours (deque) pour calculer les variables sans jamais regarder le futur."""
 
     incoming_index = build_incoming_index(transactions)
-    agent_index = build_agent_index(transactions)
     rows = []
     for sender_phone, group in transactions.groupby("sender_phone", sort=False):
         group = group.sort_values("timestamp")
         account_created_at = group["account_created_at"].iloc[0]
         kyc_level = group["kyc_level"].iloc[0]
+        customer_type = group["customer_type"].iloc[0] if pd.notna(group["customer_type"].iloc[0]) else "individual"
         sender_country = group["country"].iloc[0]
         window: deque[HistoryEntry] = deque()
         timestamps_in, entries_in = incoming_index.get(sender_phone, ([], []))
@@ -112,16 +93,14 @@ def build_feature_dataset(transactions: pd.DataFrame) -> pd.DataFrame:
             while window and window[0].created_at < cutoff:
                 window.popleft()
 
-            idx = bisect.bisect_left(timestamps_in, tx.timestamp)
-            incoming_history = [entries_in[idx - 1]] if idx > 0 else []
+            lo = bisect.bisect_left(timestamps_in, cutoff)
+            hi = bisect.bisect_left(timestamps_in, tx.timestamp)
+            incoming_history = entries_in[lo:hi]
             receiver_country = country_from_phone(tx.receiver_phone)
-            batch_id = tx.batch_id if isinstance(tx.batch_id, str) else None
             device_id = tx.device_id if isinstance(tx.device_id, str) else None
+            agent_id = tx.agent_id if isinstance(tx.agent_id, str) else None
             balance_after_sender = (
                 tx.balance_after_sender if pd.notna(tx.balance_after_sender) else None
-            )
-            agent_tx_count_last_1h, agent_distinct_senders_last_1h = agent_recent_activity(
-                tx.agent_id, tx.timestamp, agent_index
             )
 
             features = compute_context_features(
@@ -136,12 +115,10 @@ def build_feature_dataset(transactions: pd.DataFrame) -> pd.DataFrame:
                 prior_history=list(window),
                 sender_country=sender_country,
                 receiver_country=receiver_country,
-                batch_id=batch_id,
+                customer_type=customer_type,
                 incoming_history=incoming_history,
                 device_id=device_id,
                 balance_after_sender=balance_after_sender,
-                agent_tx_count_last_1h=agent_tx_count_last_1h,
-                agent_distinct_senders_last_1h=agent_distinct_senders_last_1h,
             )
             row = context_to_raw_row(features)
             row["is_fraud"] = tx.is_fraud
@@ -152,7 +129,8 @@ def build_feature_dataset(transactions: pd.DataFrame) -> pd.DataFrame:
                     receiver_phone=tx.receiver_phone,
                     amount_xof_equivalent=to_xof_equivalent(tx.amount, tx.currency),
                     created_at=tx.timestamp,
-                    batch_id=batch_id,
+                    transaction_type=tx.transaction_type,
+                    agent_id=agent_id,
                     device_id=device_id,
                 )
             )
@@ -170,11 +148,11 @@ def main():
     transactions = pd.read_csv(
         data_dir / "transactions.csv",
         parse_dates=["timestamp"],
-        dtype={"sender_phone": str, "receiver_phone": str, "batch_id": str, "agent_id": str, "device_id": str},
+        dtype={"sender_phone": str, "receiver_phone": str, "agent_id": str, "device_id": str},
     )
 
     transactions = transactions.merge(
-        customers[["phone", "account_created_at", "kyc_level", "country"]],
+        customers[["phone", "account_created_at", "kyc_level", "customer_type", "country"]],
         left_on="sender_phone",
         right_on="phone",
         how="left",
@@ -189,6 +167,7 @@ def main():
     missing_sender = transactions["phone"].isna()
     transactions.loc[missing_sender, "account_created_at"] = transactions.loc[missing_sender, "timestamp"]
     transactions.loc[missing_sender, "kyc_level"] = "basic"
+    transactions.loc[missing_sender, "customer_type"] = "individual"
     transactions.loc[missing_sender, "country"] = transactions.loc[missing_sender, "sender_phone"].map(country_from_phone)
 
     print("Calcul des variables point-in-time (règles + ML partagent la même logique)...")

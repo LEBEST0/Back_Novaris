@@ -23,13 +23,24 @@ LARGE_AMOUNT_THRESHOLD = 100_000.0  # équivalent XOF
 NIGHT_AMOUNT_THRESHOLD = 50_000.0  # équivalent XOF
 STRUCTURING_CUMULATIVE_THRESHOLD = 1_000_000.0  # équivalent XOF
 
-BATCH_MIN_LEGS_BEFORE_CHECK = 3
-BATCH_UNKNOWN_RATIO_THRESHOLD = 0.8
 SOCIAL_ENGINEERING_MIN_ACCOUNT_AGE_DAYS = 180
 SOCIAL_ENGINEERING_RATIO_THRESHOLD = 8
-SOCIAL_ENGINEERING_CHANNELS = {"mobile_app", "web", "ussd"}  # canaux en self-service
-AGENT_COLLUSION_TX_THRESHOLD = 6
-AGENT_COLLUSION_DISTINCT_SENDERS_THRESHOLD = 5
+SOCIAL_ENGINEERING_CHANNELS = {"mobile_app"}  # canal en self-service (l'agence ne l'est pas)
+
+# Compte mule récidiviste (cf. feature_engineering.compute_passthrough_cycles) : un cycle
+# isolé dépôt/réception -> retrait rapide est un usage normal, c'est la répétition qui
+# distingue le mule.
+PASSTHROUGH_MIN_CYCLES = 3
+# Si aucune source entrante n'est identifiable (dépôt app sans agent), on ne peut pas
+# vérifier la concentration : on exige davantage de répétitions en compensation.
+PASSTHROUGH_MIN_CYCLES_UNVERIFIED_SOURCE = 5
+# Un commerçant déclaré encaisse aussi en rafale (clientèle variée) — seuil relevé pour
+# ne pas le pénaliser par défaut.
+PASSTHROUGH_MIN_CYCLES_MERCHANT = 6
+# Concentration = sources distinctes / cycles identifiés. Proche de 0 = toujours la même
+# source qui alimente le compte (signe de complicité) ; proche de 1 = sources variées
+# (compatible avec un usage normal ou un commerce).
+PASSTHROUGH_CONCENTRATION_RATIO_THRESHOLD = 0.5
 
 
 @dataclass
@@ -97,8 +108,8 @@ def _r_structuring(f: ContextFeatures) -> RuleResult:
 def _r_fanout(f: ContextFeatures) -> RuleResult:
     triggered = f.distinct_receivers_last_1h >= 4
     desc = (
-        f"{f.distinct_receivers_last_1h} bénéficiaires distincts en moins d'une heure hors "
-        f"opération de paiement de masse déclarée (schéma de distribution possible)"
+        f"{f.distinct_receivers_last_1h} bénéficiaires distincts en moins d'une heure "
+        "(schéma de distribution possible)"
     )
     return RuleResult("FANOUT_PATTERN", desc, 20.0, triggered)
 
@@ -111,24 +122,6 @@ def _r_cross_border_passthrough(f: ContextFeatures) -> RuleResult:
         f"(schéma de transit / blanchiment par superposition)"
     )
     return RuleResult("CROSS_BORDER_PASSTHROUGH", desc, 40.0, triggered)
-
-
-def _r_suspicious_batch(f: ContextFeatures) -> RuleResult:
-    # Un lot déclaré n'est pas automatiquement légitime : le mécanisme de paiement de
-    # masse peut lui-même être détourné pour disperser des fonds vers des comptes mules
-    # sous couvert d'une opération "groupée". On regarde si CE lot précis envoie
-    # majoritairement vers des bénéficiaires jamais vus par ce client en dehors du lot.
-    triggered = (
-        f.is_batch_operation
-        and f.batch_size_so_far >= BATCH_MIN_LEGS_BEFORE_CHECK
-        and f.batch_unknown_receiver_ratio >= BATCH_UNKNOWN_RATIO_THRESHOLD
-    )
-    desc = (
-        f"Paiement de masse déclaré mais {f.batch_unknown_receiver_ratio * 100:.0f}% des "
-        f"{f.batch_size_so_far} bénéficiaires vus jusqu'ici dans ce lot sont inconnus du "
-        f"client — possible détournement du mécanisme vers des comptes mules"
-    )
-    return RuleResult("SUSPICIOUS_BATCH", desc, 35.0, triggered)
 
 
 def _r_sim_swap_signal(f: ContextFeatures) -> RuleResult:
@@ -169,38 +162,29 @@ def _r_social_engineering_signal(f: ContextFeatures) -> RuleResult:
     return RuleResult("SOCIAL_ENGINEERING_SIGNAL", desc, 30.0, triggered)
 
 
-AGENT_COLLUSION_TYPES = {"withdrawal", "deposit"}
-
-
-def _r_agent_collusion_cashout(f: ContextFeatures) -> RuleResult:
-    # Un agent qui traite un volume anormalement élevé de dépôts OU de retraits pour de
-    # nombreux clients différents en peu de temps est un schéma documenté de complicité
-    # agent (GSMA) — "cash-out mill" côté retrait, faux dépôt (crédit sans cash réel remis)
-    # côté dépôt. Indépendant du comportement de CE client en particulier.
-    triggered = (
-        f.transaction_type in AGENT_COLLUSION_TYPES
-        and f.agent_tx_count_last_1h >= AGENT_COLLUSION_TX_THRESHOLD
-        and f.agent_distinct_senders_last_1h >= AGENT_COLLUSION_DISTINCT_SENDERS_THRESHOLD
-    )
-    action = "retraits" if f.transaction_type == "withdrawal" else "dépôts"
+def _r_mule_passthrough_pattern(f: ContextFeatures) -> RuleResult:
+    # Compte mule récidiviste : ce compte encaisse (dépôt ou réception) puis ressort
+    # l'argent quasi aussitôt, de façon répétée dans le temps — pas un cas isolé, qui
+    # relève d'un usage normal (ex. dépôt puis envoi immédiat à un proche). On distingue
+    # d'un commerce légitime (encaisse aussi en rafale mais depuis des clients variés) en
+    # regardant si les sources identifiables se répètent : peu de sources distinctes pour
+    # beaucoup de cycles = probablement le même complice qui alimente le compte.
+    if f.passthrough_cycle_count_30d < PASSTHROUGH_MIN_CYCLES:
+        triggered = False
+    elif f.customer_type == "merchant" and f.passthrough_cycle_count_30d < PASSTHROUGH_MIN_CYCLES_MERCHANT:
+        triggered = False
+    elif f.passthrough_identified_cycle_count_30d == 0:
+        triggered = f.passthrough_cycle_count_30d >= PASSTHROUGH_MIN_CYCLES_UNVERIFIED_SOURCE
+    else:
+        concentration = f.passthrough_distinct_sources_30d / f.passthrough_identified_cycle_count_30d
+        triggered = concentration <= PASSTHROUGH_CONCENTRATION_RATIO_THRESHOLD
     desc = (
-        f"Agent ayant traité {f.agent_tx_count_last_1h} {action} pour "
-        f"{f.agent_distinct_senders_last_1h} clients différents en moins d'une heure — "
-        "possible complicité agent (cash-out frauduleux ou faux dépôt)"
+        f"{f.passthrough_cycle_count_30d} cycles réception -> retrait rapide (montant "
+        f"équivalent, moins d'1h d'écart) sur 30 jours, {f.passthrough_distinct_sources_30d} "
+        f"source(s) identifiée(s) sur {f.passthrough_identified_cycle_count_30d} cycle(s) "
+        "traçable(s) — profil compatible avec un compte de passage (mule)"
     )
-    return RuleResult("AGENT_COLLUSION_CASHOUT", desc, 30.0, triggered)
-
-
-def _r_merchant_layering(f: ContextFeatures) -> RuleResult:
-    # Un paiement marchand reçu puis évacué (retrait ou renvoi) quasi immédiatement pour
-    # un montant similaire est un schéma de blanchiment via faux marchand (transaction
-    # laundering) — indépendant du pays, contrairement au transit transfrontalier.
-    triggered = f.is_merchant_layering
-    desc = (
-        f"Paiement marchand reçu il y a moins d'une heure, puis évacuation quasi immédiate "
-        f"de {f.amount:,.0f} {f.currency} — schéma de blanchiment via faux marchand"
-    )
-    return RuleResult("MERCHANT_LAYERING_SIGNAL", desc, 35.0, triggered)
+    return RuleResult("MULE_PASSTHROUGH_PATTERN", desc, 35.0, triggered)
 
 
 def _r_transaction_behaviour_anomaly(f: ContextFeatures) -> RuleResult:
@@ -250,12 +234,10 @@ RULES = [
     _r_structuring,
     _r_fanout,
     _r_cross_border_passthrough,
-    _r_suspicious_batch,
     _r_sim_swap_signal,
     _r_social_engineering_signal,
-    _r_agent_collusion_cashout,
+    _r_mule_passthrough_pattern,
     _r_account_drained,
-    _r_merchant_layering,
     _r_transaction_behaviour_anomaly,
 ]
 

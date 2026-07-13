@@ -42,13 +42,6 @@ class TransactionMonitoringService:
         if payload.currency is None:
             payload.currency = currency_for_country(sender.country)
 
-        agent_tx_count_last_1h = 0
-        agent_distinct_senders_last_1h = 0
-        if payload.agent_id:
-            agent_tx_count_last_1h, agent_distinct_senders_last_1h = self.repo.get_agent_recent_activity(
-                payload.agent_id, before=timestamp
-            )
-
         features = compute_context_features(
             amount=payload.amount,
             receiver_phone=payload.receiver_phone,
@@ -61,12 +54,10 @@ class TransactionMonitoringService:
             prior_history=prior_history,
             sender_country=sender.country,
             receiver_country=receiver_country,
-            batch_id=payload.batch_id,
+            customer_type=sender.customer_type,
             incoming_history=incoming_history,
             device_id=payload.device_id,
             balance_after_sender=payload.balance_after_sender,
-            agent_tx_count_last_1h=agent_tx_count_last_1h,
-            agent_distinct_senders_last_1h=agent_distinct_senders_last_1h,
             behaviour_time_to_complete_ms=payload.behaviour_time_to_complete_ms,
             behaviour_amount_field_edits=payload.behaviour_amount_field_edits,
         )

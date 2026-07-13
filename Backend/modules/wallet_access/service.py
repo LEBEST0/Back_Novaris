@@ -13,6 +13,7 @@ from modules.wallet_access.repository import WalletAccessRepository
 from modules.wallet_access.schemas import (
     AccessEventIn,
     AccessEventOut,
+    AgentOut,
     BeneficiaryIn,
     BeneficiaryOut,
     DashboardOut,
@@ -28,6 +29,10 @@ from modules.wallet_access.schemas import (
     TransferConfirmOut,
     TransferPrepareIn,
     TransferPrepareOut,
+    WalletDepositIn,
+    WalletDepositOut,
+    WalletWithdrawIn,
+    WalletWithdrawOut,
 )
 from shared.utils.geo import haversine_km
 from shared.utils.id_generator import generate_wallet_number
@@ -38,6 +43,15 @@ MAX_PLAUSIBLE_TRAVEL_SPEED_KMH = 900.0  # vitesse d'un vol commercial, seuil de 
 LOCATION_ANOMALY_RADIUS_KM = 150.0
 # Code de démonstration uniquement — un vrai OTP serait généré et envoyé par SMS/notification.
 DEMO_OTP_CODE = "123456"
+
+# Agents de démonstration (aucune vraie agence) — le retrait exige toujours un passage en
+# agence physique ; le dépôt peut aussi passer par un agent (cash-in) ou directement depuis
+# un compte Mobile money externe via l'app (cf. WalletDepositIn.source).
+DEMO_AGENTS = [
+    {"agent_id": "AGT-CI-00187", "name": "Kouassi P. — Agence Cocody Angré", "city": "Abidjan"},
+    {"agent_id": "AGT-CI-00214", "name": "Fatou D. — Agence Adjamé Liberté", "city": "Abidjan"},
+    {"agent_id": "AGT-CI-00309", "name": "Boubacar S. — Agence Yopougon", "city": "Abidjan"},
+]
 
 
 def _utcnow() -> datetime:
@@ -61,6 +75,10 @@ class UserNotFoundError(Exception):
 
 
 class BeneficiaryNotFoundError(Exception):
+    pass
+
+
+class InsufficientBalanceError(Exception):
     pass
 
 
@@ -517,6 +535,8 @@ class WalletAccessService:
             raise BeneficiaryNotFoundError()
 
         primary_device = self.repo.get_primary_device(payload.user_id)
+        balance_before = user.balance
+        balance_after = balance_before - payload.amount
 
         txn_payload = TransactionIn(
             sender_phone=user.phone,
@@ -526,6 +546,8 @@ class WalletAccessService:
             channel="mobile_app",
             device_id=primary_device.device_fingerprint if primary_device else None,
             note=payload.reason,
+            balance_before_sender=balance_before,
+            balance_after_sender=balance_after,
             behaviour_time_to_complete_ms=payload.behaviour_time_to_complete_ms,
             behaviour_amount_field_edits=payload.behaviour_amount_field_edits,
         )
@@ -545,7 +567,7 @@ class WalletAccessService:
         }
 
         if status == "COMPLETED":
-            user.balance -= payload.amount
+            user.balance = balance_after
 
         wallet_transaction = self.repo.create_wallet_transaction(
             user_id=payload.user_id,
@@ -568,6 +590,137 @@ class WalletAccessService:
             wallet_transaction_id=wallet_transaction.id,
             status=status,
             message=message_by_status[status],
+        )
+
+    def list_agents(self) -> list[AgentOut]:
+        return [AgentOut(**agent) for agent in DEMO_AGENTS]
+
+    def deposit(self, payload: WalletDepositIn) -> WalletDepositOut:
+        """Dépôt (cash-in) — en agence (channel="agent", agent_id renseigné) ou directement
+        depuis un compte Mobile money externe via l'app (channel="mobile_app"). C'est ce
+        deuxième cas, combiné à un retrait rapide, que rules.MULE_PASSTHROUGH_PATTERN
+        surveille : voir confirm_withdraw ci-dessous."""
+        user = self.repo.get_user(payload.user_id)
+        if user is None:
+            raise UserNotFoundError()
+
+        primary_device = self.repo.get_primary_device(payload.user_id)
+        balance_before = user.balance
+        balance_after = balance_before + payload.amount
+        via_agent = payload.source == "agent"
+
+        txn_payload = TransactionIn(
+            sender_phone=user.phone,
+            receiver_phone=user.phone,
+            amount=payload.amount,
+            transaction_type="deposit",
+            channel="agent" if via_agent else "mobile_app",
+            agent_id=payload.agent_id if via_agent else None,
+            device_id=primary_device.device_fingerprint if primary_device else None,
+            balance_before_sender=balance_before,
+            balance_after_sender=balance_after,
+            behaviour_time_to_complete_ms=payload.behaviour_time_to_complete_ms,
+            behaviour_amount_field_edits=payload.behaviour_amount_field_edits,
+        )
+        analysis = TransactionMonitoringService(self.db).analyze(txn_payload)
+
+        status_by_decision = {
+            "ALLOW": "COMPLETED",
+            "MONITOR": "COMPLETED",
+            "REVIEW": "PENDING",
+            "TEMPORARY_BLOCK": "BLOCKED",
+        }
+        status = status_by_decision.get(analysis.decision, "PENDING")
+        message_by_status = {
+            "COMPLETED": "Dépôt effectué avec succès.",
+            "PENDING": "Votre dépôt est en cours de vérification. Vous serez notifié dès qu'il sera traité.",
+            "BLOCKED": "Ce dépôt n'a pas pu être effectué. Contactez le support Amani Wallet pour plus d'informations.",
+        }
+
+        if status == "COMPLETED":
+            user.balance = balance_after
+
+        wallet_transaction = self.repo.create_wallet_transaction(
+            user_id=payload.user_id, beneficiary_id=None, amount=payload.amount, type_="deposit", status=status,
+        )
+        self.repo.log_event(
+            event_type="DEPOSIT_CONFIRMED",
+            user_id=payload.user_id,
+            session_id=None,
+            payload={**payload.model_dump(mode="json"), "transaction_monitoring_id": analysis.transaction_id},
+            response_status=analysis.decision,
+        )
+        self.db.commit()
+
+        return WalletDepositOut(
+            wallet_transaction_id=wallet_transaction.id,
+            status=status,
+            message=message_by_status[status],
+            new_balance=user.balance,
+        )
+
+    def withdraw(self, payload: WalletWithdrawIn) -> WalletWithdrawOut:
+        """Retrait (cash-out) — toujours en agence. Un dépôt suivi d'un retrait rapide sur
+        ce même compte est exactement le cycle que rules.MULE_PASSTHROUGH_PATTERN cherche
+        à détecter, répété dans le temps (cf. feature_engineering.compute_passthrough_cycles)."""
+        user = self.repo.get_user(payload.user_id)
+        if user is None:
+            raise UserNotFoundError()
+        if payload.amount > user.balance:
+            raise InsufficientBalanceError()
+
+        primary_device = self.repo.get_primary_device(payload.user_id)
+        balance_before = user.balance
+        balance_after = balance_before - payload.amount
+
+        txn_payload = TransactionIn(
+            sender_phone=user.phone,
+            receiver_phone=user.phone,
+            amount=payload.amount,
+            transaction_type="withdrawal",
+            channel="agent",
+            agent_id=payload.agent_id,
+            device_id=primary_device.device_fingerprint if primary_device else None,
+            balance_before_sender=balance_before,
+            balance_after_sender=balance_after,
+            behaviour_time_to_complete_ms=payload.behaviour_time_to_complete_ms,
+            behaviour_amount_field_edits=payload.behaviour_amount_field_edits,
+        )
+        analysis = TransactionMonitoringService(self.db).analyze(txn_payload)
+
+        status_by_decision = {
+            "ALLOW": "COMPLETED",
+            "MONITOR": "COMPLETED",
+            "REVIEW": "PENDING",
+            "TEMPORARY_BLOCK": "BLOCKED",
+        }
+        status = status_by_decision.get(analysis.decision, "PENDING")
+        message_by_status = {
+            "COMPLETED": "Retrait effectué avec succès.",
+            "PENDING": "Votre retrait est en cours de vérification. Vous serez notifié dès qu'il sera traité.",
+            "BLOCKED": "Ce retrait n'a pas pu être effectué. Contactez le support Amani Wallet pour plus d'informations.",
+        }
+
+        if status == "COMPLETED":
+            user.balance = balance_after
+
+        wallet_transaction = self.repo.create_wallet_transaction(
+            user_id=payload.user_id, beneficiary_id=None, amount=payload.amount, type_="withdrawal", status=status,
+        )
+        self.repo.log_event(
+            event_type="WITHDRAWAL_CONFIRMED",
+            user_id=payload.user_id,
+            session_id=None,
+            payload={**payload.model_dump(mode="json"), "transaction_monitoring_id": analysis.transaction_id},
+            response_status=analysis.decision,
+        )
+        self.db.commit()
+
+        return WalletWithdrawOut(
+            wallet_transaction_id=wallet_transaction.id,
+            status=status,
+            message=message_by_status[status],
+            new_balance=user.balance,
         )
 
     def get_history(self, user_id: str) -> list[HistoryEntryOut]:

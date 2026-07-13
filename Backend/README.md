@@ -94,35 +94,32 @@ niveau de risque, une décision et les raisons qui l'expliquent.
 
 - **Customer** : titulaire de portefeuille suivi (émetteur), créé automatiquement au
   premier contact si inconnu (kyc_level, type de client, ville, ancienneté du compte).
-- **Transaction** : 12 champs minimum reçus du canal d'entrée (téléphones émetteur/
-  destinataire, montant, devise, type, canal, timestamp, ville, device_id, note), plus
-  `batch_id`, `agent_id`, `balance_before_sender`/`balance_after_sender` (tous optionnels).
+- **Transaction** : téléphones émetteur/destinataire, montant, devise, type (`deposit` /
+  `withdrawal` / `transfer`), canal (`mobile_app` / `agent`), timestamp, ville, device_id,
+  note, plus `agent_id`, `balance_before_sender`/`balance_after_sender` (tous optionnels).
 - **TransactionAnalysis** : résultat d'analyse (scores règles/ML/final, décision,
   raisons, facteurs SHAP, version du modèle) — constitue la piste d'audit.
 
 ### Multi-pays et passerelle de paiement
 
 Clapay opère dans 18 pays avec plusieurs devises et un vrai produit d'interopérabilité
-transfrontalière et de paiement de masse. Conséquences dans le code : montants normalisés en
-équivalent XOF pour le scoring (les seuils gardent le même sens réel en NGN ou GHS), un
-`batch_id` optionnel pour qu'un paiement de masse déclaré (Clapay B2B, N bénéficiaires en une
-opération) ne soit jamais confondu avec un fan-out frauduleux, et une détection de transit
+transfrontalière. Conséquences dans le code : montants normalisés en équivalent XOF pour le
+scoring (les seuils gardent le même sens réel en NGN ou GHS), et une détection de transit
 transfrontalier (reçu d'un pays, renvoyé vers un autre en moins d'une heure — schéma de
 blanchiment par superposition). Détails et résultats vérifiés en direct dans le
 [README du module](modules/transaction_monitoring/README.md#modélisation-multi-pays-et-passerelle-de-paiement).
 
 ### Moteur hybride règles + ML
 
-1. **Règles métier** (`rules.py`, 14 règles) : pic de montant, vélocité anormale,
+1. **Règles métier** (`rules.py`, 13 règles) : pic de montant, vélocité anormale,
    bénéficiaire inconnu pour un montant élevé, activité nocturne, nouveau compte à
    forte valeur, fractionnement (structuring), distribution vers plusieurs bénéficiaires
-   hors paiement de masse déclaré (fan-out), transit transfrontalier, paiement de masse
-   détourné (`SUSPICIOUS_BATCH`), changement d'appareil suspect (`SIM_SWAP_SIGNAL`),
-   ingénierie sociale (`SOCIAL_ENGINEERING_SIGNAL`), complicité d'agent sur dépôt ou
-   retrait (`AGENT_COLLUSION_CASHOUT`), solde vidé (`ACCOUNT_DRAINED`), blanchiment via
-   faux marchand (`MERCHANT_LAYERING_SIGNAL`). Chaque règle est déterministe, pondérée et
-   documentée en langage naturel — auditable indépendamment du modèle ML. Détail complet
-   dans le [README du module](modules/transaction_monitoring/README.md).
+   (fan-out), transit transfrontalier, compte mule récidiviste (cycles répétés dépôt/
+   réception → retrait rapide, `MULE_PASSTHROUGH_PATTERN`), changement d'appareil suspect
+   (`SIM_SWAP_SIGNAL`), ingénierie sociale (`SOCIAL_ENGINEERING_SIGNAL`), solde vidé
+   (`ACCOUNT_DRAINED`). Chaque règle est déterministe, pondérée et documentée en langage
+   naturel — auditable indépendamment du modèle ML. Détail complet dans le
+   [README du module](modules/transaction_monitoring/README.md).
 2. **Modèle ML** (`ml.py`) : XGBoost entraîné sur données synthétiques, avec un
    explicateur SHAP qui traduit les 3 facteurs les plus influents en phrases lisibles
    par un analyste.
@@ -161,7 +158,6 @@ Matrice de décision (alignée sur le document produit) :
   "transaction_id": "TXN-6D05ED0FC7A24086",
   "sender_country": "Côte d'Ivoire",
   "is_cross_border": false,
-  "batch_id": null,
   "rule_score": 0.0,
   "ml_score": 0.84,
   "final_score": 0.46,
@@ -268,25 +264,21 @@ démarrage du serveur.
 
 ## Résultats du modèle ML
 
-Sur le dataset synthétique (≈1500 clients répartis sur **18 pays**, ≈150 agents,
-≈520 000 transactions sur **12 mois**, 11 scénarios de fraude par client + 1 scénario
-centré agent en 2 variantes (dépôt/retrait), jeu de test = 20 %) :
+Sur le dataset synthétique (≈1500 clients répartis sur **18 pays**, ≈25 agents,
+≈530 000 transactions sur **12 mois**, 10 scénarios de fraude par client, jeu de test = 20 %) :
 
 | Métrique | Valeur |
 |---|---|
 | AUC-ROC | 0.9997 |
-| AUC-PR | 0.98 |
-| Recall (seuil 0.5) | 0.98 |
-| Precision (seuil 0.5) | 0.63 |
+| AUC-PR | 0.97 |
+| Recall (seuil 0.5) | 0.99 |
+| Precision (seuil 0.5) | 0.44 |
 
-Les variables les plus influentes selon SHAP : type de transaction, montant moyen habituel
-du client, bénéficiaire connu/inconnu, écart par rapport à l'habitude, montant (équivalent
-XOF), cumul sur 1h. `is_new_device`, `minutes_since_last_incoming` et `batch_size_so_far`
-figurent aussi dans le top 10 — le modèle exploite bien les signaux appareil/transit/batch,
-pas seulement montant/vélocité. La fraude était initialement concentrée à 100% sur `transfer`
-et `withdrawal` (angle mort identifié en revue) ; elle couvre maintenant aussi `deposit` et
-`merchant_payment` — `bill_payment`/`airtime_purchase` restent un angle mort assumé (volume
-plus faible, pas de schéma majeur documenté par le GSMA pour ces deux types).
+Les variables les plus influentes selon SHAP : bénéficiaire connu/inconnu, cumul sur 1h, type
+de transaction, montant moyen habituel du client, type de client, montant (équivalent XOF) —
+le modèle exploite bien les signaux appareil/historique/type, pas seulement montant/vélocité.
+Périmètre volontairement restreint aux 3 types wallet (`deposit`/`withdrawal`/`transfer`) ;
+paiement marchand et paiement de facture/crédit ne font pas partie du produit couvert.
 
 ## Limites connues et prochaines étapes
 

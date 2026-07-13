@@ -5,13 +5,15 @@ import { SecurityVerification } from "./screens/SecurityVerification";
 import { Dashboard } from "./screens/Dashboard";
 import { Beneficiaries } from "./screens/Beneficiaries";
 import { TransferPrepare } from "./screens/TransferPrepare";
+import { Deposit } from "./screens/Deposit";
+import { Withdraw } from "./screens/Withdraw";
 import { History } from "./screens/History";
 import { Profile } from "./screens/Profile";
 import { DemoMode } from "./screens/DemoMode";
 import type { NavScreen } from "./components/BottomNav";
 import type { Beneficiary, DemoScenario, EvaluateAccessResult } from "./types";
 
-type Screen = "splash" | "login" | "verify" | "demo" | NavScreen | "transfer";
+type Screen = "splash" | "login" | "verify" | "demo" | NavScreen | "transfer" | "deposit" | "withdraw";
 
 export function App() {
   const [screen, setScreen] = useState<Screen>("splash");
@@ -82,7 +84,13 @@ export function App() {
       )}
 
       {screen === "dashboard" && userId && (
-        <Dashboard userId={userId} onNavigate={setScreen} onSend={() => setScreen("transfer")} />
+        <Dashboard
+          userId={userId}
+          onNavigate={setScreen}
+          onSend={() => setScreen("transfer")}
+          onDeposit={() => setScreen("deposit")}
+          onWithdraw={() => setScreen("withdraw")}
+        />
       )}
 
       {screen === "beneficiaries" && userId && (
@@ -107,6 +115,14 @@ export function App() {
             setScreen("dashboard");
           }}
         />
+      )}
+
+      {screen === "deposit" && userId && (
+        <Deposit userId={userId} onBack={() => setScreen("dashboard")} onDone={() => setScreen("dashboard")} />
+      )}
+
+      {screen === "withdraw" && userId && (
+        <Withdraw userId={userId} onBack={() => setScreen("dashboard")} onDone={() => setScreen("dashboard")} />
       )}
 
       {screen === "history" && userId && <History userId={userId} onNavigate={setScreen} />}
