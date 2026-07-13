@@ -19,7 +19,6 @@ export interface TransactionAnalysis {
   receiver_phone: string;
   receiver_country: string | null;
   is_cross_border: boolean;
-  batch_id: string | null;
   agent_id: string | null;
   device_id: string | null;
   sender_city: string | null;
@@ -61,10 +60,11 @@ export interface TransactionRequest {
   device_id?: string | null;
   sender_city?: string | null;
   note?: string | null;
-  batch_id?: string | null;
   agent_id?: string | null;
   balance_before_sender?: number | null;
   balance_after_sender?: number | null;
+  behaviour_time_to_complete_ms?: number | null;
+  behaviour_amount_field_edits?: number | null;
 }
 
 export interface DashboardKpis {
@@ -82,6 +82,25 @@ export interface DashboardTrendPoint {
   transactions_analyzed: number;
   alerts: number;
   average_score: number;
+}
+
+export interface RiskDistributionPoint {
+  risk_level: RiskLevel;
+  count: number;
+  average_score: number;
+}
+
+export interface Customer {
+  phone: string;
+  full_name: string;
+  kyc_level: string;
+  national_id: string | null;
+  customer_type: string;
+  operator: string;
+  country: string;
+  home_city: string;
+  account_created_at: string;
+  last_device_id: string | null;
 }
 
 export interface NetworkNode {

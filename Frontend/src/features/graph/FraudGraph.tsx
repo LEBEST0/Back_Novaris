@@ -14,7 +14,7 @@ import {
   type Node,
   type NodeProps,
 } from "@xyflow/react";
-import { Compass, Landmark, Layers, Smartphone, User, UserCheck } from "lucide-react";
+import { Compass, Landmark, Smartphone, User, UserCheck } from "lucide-react";
 import type { TransactionAnalysis } from "../../types";
 import { formatCurrency, formatDateTime, formatDecision } from "../../utils/format";
 
@@ -22,7 +22,7 @@ interface FraudGraphProps {
   current: TransactionAnalysis;
 }
 
-type NodeRole = "sender" | "receiver" | "agent" | "device" | "batch";
+type NodeRole = "sender" | "receiver" | "agent" | "device";
 type HandleSpec = { id: string; position: Position; type: "source" | "target" };
 
 interface TooltipRow {
@@ -53,7 +53,6 @@ const ROLE_ICON: Record<NodeRole, typeof User> = {
   receiver: User,
   agent: Landmark,
   device: Smartphone,
-  batch: Layers,
 };
 
 function CircleNode({ data }: NodeProps<Node<CircleNodeData>>) {
@@ -121,7 +120,7 @@ function PropertyEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
 const nodeTypes = { circleNode: CircleNode };
 const edgeTypes = { propertyEdge: PropertyEdge };
 
-const AGENT_RULE_CODES = new Set(["AGENT_COLLUSION_CASHOUT"]);
+const AGENT_RULE_CODES = new Set(["MULE_PASSTHROUGH_PATTERN"]);
 const DEVICE_RULE_CODES = new Set(["SIM_SWAP_SIGNAL", "SOCIAL_ENGINEERING_SIGNAL"]);
 
 function shortPhone(phone: string) {
@@ -144,9 +143,8 @@ export function FraudGraph({ current }: FraudGraphProps) {
     const roles: NodeRole[] = [];
     if (current.agent_id) roles.push("agent");
     if (current.device_id) roles.push("device");
-    if (current.batch_id) roles.push("batch");
     return roles;
-  }, [current.agent_id, current.batch_id, current.device_id]);
+  }, [current.agent_id, current.device_id]);
 
   const nodes: Node<CircleNodeData>[] = useMemo(() => {
     const centerY = 140;
@@ -235,21 +233,6 @@ export function FraudGraph({ current }: FraudGraphProps) {
           },
         });
       }
-      if (role === "batch") {
-        list.push({
-          id: "batch",
-          type: "circleNode",
-          position: { x: 330, y },
-          data: {
-            role: "batch",
-            shortLabel: current.batch_id ?? "",
-            caption: "Batch",
-            handles: [{ id: "top", position: Position.Top, type: "target" }],
-            tooltipTitle: `Batch ${current.batch_id}`,
-            tooltipRows: [{ label: "Type", value: "Paiement de masse" }],
-          },
-        });
-      }
     });
 
     return list;
@@ -324,22 +307,6 @@ export function FraudGraph({ current }: FraudGraphProps) {
       });
     }
 
-    if (current.batch_id) {
-      list.push({
-        id: "sender-batch",
-        source: "sender",
-        sourceHandle: "bottom",
-        target: "batch",
-        targetHandle: "top",
-        type: "propertyEdge",
-        markerEnd: { type: MarkerType.ArrowClosed },
-        data: {
-          chipLabel: "Batch",
-          tooltipTitle: "Relation émetteur → batch",
-          tooltipRows: [{ label: "Rôle", value: "Fait partie de ce paiement de masse" }],
-        },
-      });
-    }
 
     return list;
   }, [agentFlagged, current, deviceFlagged]);

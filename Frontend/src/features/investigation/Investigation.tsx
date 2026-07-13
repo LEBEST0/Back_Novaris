@@ -66,7 +66,6 @@ export function Investigation({ current, onReport, onFeedback }: InvestigationPr
             <label>Ville émetteur<span>{current.sender_city ?? "—"}</span></label>
             <label>Device<span className="mono">{current.device_id ?? "—"}</span></label>
             <label>Agent<span className="mono">{current.agent_id ?? "—"}</span></label>
-            <label>Batch<span className="mono">{current.batch_id ?? "—"}</span></label>
             <label>Solde avant<span>{current.balance_before_sender !== null ? formatCurrency(current.balance_before_sender, current.currency) : "—"}</span></label>
             <label>Solde après<span>{current.balance_after_sender !== null ? formatCurrency(current.balance_after_sender, current.currency) : "—"}</span></label>
             <label>Calculé le<span>{formatDateTime(current.computed_at)}</span></label>

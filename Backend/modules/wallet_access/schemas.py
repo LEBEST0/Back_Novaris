@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class DeviceInfoIn(BaseModel):
@@ -169,6 +169,53 @@ class TransferConfirmOut(BaseModel):
     wallet_transaction_id: str
     status: str  # COMPLETED | PENDING | BLOCKED
     message: str
+
+
+class WalletDepositIn(BaseModel):
+    user_id: str
+    amount: float = Field(gt=0)
+    source: str = Field(
+        default="agent",
+        description="'agent' (dépôt cash en agence) ou 'external_momo' (compte Mobile money externe via l'app)",
+    )
+    agent_id: str | None = None
+    behaviour_time_to_complete_ms: int | None = None
+    behaviour_amount_field_edits: int | None = None
+
+    @field_validator("source")
+    @classmethod
+    def validate_source(cls, v: str) -> str:
+        if v not in {"agent", "external_momo"}:
+            raise ValueError("source doit être 'agent' ou 'external_momo'")
+        return v
+
+
+class WalletDepositOut(BaseModel):
+    wallet_transaction_id: str
+    status: str  # COMPLETED | PENDING | BLOCKED
+    message: str
+    new_balance: float
+
+
+class WalletWithdrawIn(BaseModel):
+    user_id: str
+    agent_id: str = Field(description="Le retrait exige toujours un passage en agence physique")
+    amount: float = Field(gt=0)
+    behaviour_time_to_complete_ms: int | None = None
+    behaviour_amount_field_edits: int | None = None
+
+
+class WalletWithdrawOut(BaseModel):
+    wallet_transaction_id: str
+    status: str  # COMPLETED | PENDING | BLOCKED
+    message: str
+    new_balance: float
+
+
+class AgentOut(BaseModel):
+    agent_id: str
+    name: str
+    city: str
 
 
 class DashboardOut(BaseModel):
