@@ -3,8 +3,8 @@ import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ResponsiveContaine
 import { useEffect, useState } from "react";
 import { KpiCard } from "../../components/KpiCard";
 import { RiskBadge } from "../../components/RiskBadge";
-import type { DashboardKpis, DashboardTrendPoint, RiskLevel, TransactionAnalysis } from "../../types";
-import { fetchDashboardKpis, fetchDashboardTrend } from "../../services/api";
+import type { DashboardKpis, DashboardTrendPoint, RiskDistributionPoint, RiskLevel, TransactionAnalysis } from "../../types";
+import { fetchDashboardKpis, fetchDashboardTrend, fetchRiskDistribution } from "../../services/api";
 import { formatCurrency, formatDecision, formatPercent, riskClass } from "../../utils/format";
 
 interface DashboardProps {
@@ -32,10 +32,12 @@ const riskLabels: Record<RiskLevel, string> = {
 export function Dashboard({ transactions, liveActive, onToggleLive, onOpen }: DashboardProps) {
   const [kpis, setKpis] = useState<DashboardKpis | null>(null);
   const [trend, setTrend] = useState<DashboardTrendPoint[]>([]);
+  const [riskDistribution, setRiskDistribution] = useState<RiskDistributionPoint[]>([]);
 
   useEffect(() => {
     fetchDashboardKpis().then(setKpis);
     fetchDashboardTrend().then(setTrend);
+    fetchRiskDistribution().then(setRiskDistribution);
   }, []);
 
   useEffect(() => {
@@ -43,18 +45,22 @@ export function Dashboard({ transactions, liveActive, onToggleLive, onOpen }: Da
     const interval = window.setInterval(() => {
       fetchDashboardKpis().then(setKpis);
       fetchDashboardTrend().then(setTrend);
+      fetchRiskDistribution().then(setRiskDistribution);
     }, 15000);
     return () => window.clearInterval(interval);
   }, [liveActive]);
 
+  // Agrégat calculé côté backend sur TOUTE la base (pas un échantillon récent côté
+  // client) — un décompte qui semblerait baisser sans suppression donnerait l'impression
+  // d'un bug (cf. investigation : l'ancien calcul se basait sur les 50 dernières
+  // transactions chargées, une fenêtre glissante non représentative de l'ensemble).
   const distribution = riskOrder.map((level) => {
-    const items = transactions.filter((item) => item.risk_level === level);
-    const average = items.length ? Math.round(items.reduce((sum, item) => sum + item.final_score, 0) / items.length) : 0;
+    const point = riskDistribution.find((item) => item.risk_level === level);
     return {
       level,
       name: riskLabels[level],
-      count: items.length,
-      score: average,
+      count: point?.count ?? 0,
+      score: point ? Math.round(point.average_score) : 0,
     };
   });
 
@@ -133,7 +139,7 @@ export function Dashboard({ transactions, liveActive, onToggleLive, onOpen }: Da
         <article className="panel chart-panel wide">
           <div className="panel-heading">
             <h2>Répartition des risques</h2>
-            <span>{transactions.length} transactions récentes chargées</span>
+            <span>{kpis?.transactions_analyzed ?? 0} transactions en base</span>
           </div>
           <div className="risk-overview-grid">
             {distribution.map((item) => (

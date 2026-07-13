@@ -52,6 +52,14 @@ export function App() {
       .finally(() => setSubmitting(false));
   };
 
+  // Utilisé par les scénarios multi-étapes (ex. compte mule) : l'analyse finale a déjà
+  // été calculée côté Analysis.tsx (plusieurs appels réels à /analyze), on affiche juste
+  // le résultat sans le recalculer.
+  const handleAnalysisComplete = (analysis: TransactionAnalysis) => {
+    setCurrent(analysis);
+    setTransactions((items) => [analysis, ...items].slice(0, 100));
+  };
+
   const handleFeedback = (feedback: AnalystFeedback, note?: string) => {
     if (!current) return;
     submitFeedback(current.transaction_id, feedback, note).then((updated) => {
@@ -89,6 +97,7 @@ export function App() {
           submitting={submitting}
           error={error}
           onAnalyze={handleAnalyze}
+          onAnalysisComplete={handleAnalysisComplete}
           onOpenInvestigation={() => setScreen("investigation")}
         />
       ),

@@ -14,91 +14,85 @@
     "tx_count_last_1h",
     "sum_amount_last_1h",
     "distinct_receivers_last_1h",
-    "is_batch_operation",
-    "batch_size_so_far",
-    "batch_unknown_receiver_ratio",
     "is_cross_border",
     "minutes_since_last_incoming",
     "incoming_amount_ratio",
     "is_cross_border_passthrough",
     "is_new_device",
     "is_balance_drained",
-    "is_merchant_layering",
-    "agent_tx_count_last_1h",
-    "agent_distinct_senders_last_1h",
+    "passthrough_cycle_count_30d",
+    "passthrough_identified_cycle_count_30d",
+    "passthrough_distinct_sources_30d",
     "kyc_level_basic",
     "kyc_level_premium",
     "kyc_level_standard",
-    "transaction_type_airtime_purchase",
-    "transaction_type_bill_payment",
+    "customer_type_agent",
+    "customer_type_individual",
+    "customer_type_merchant",
     "transaction_type_deposit",
-    "transaction_type_merchant_payment",
     "transaction_type_transfer",
     "transaction_type_withdrawal",
     "channel_agent",
-    "channel_api",
-    "channel_mobile_app",
-    "channel_ussd",
-    "channel_web"
+    "channel_mobile_app"
   ],
   "metadata": {
     "model_version": "txn-monitoring-v1",
-    "trained_at": "2026-07-10T09:55:23.179019+00:00",
-    "n_train": 416059,
-    "n_test": 104015,
-    "fraud_rate_train": 0.0027904696208951134,
+    "trained_at": "2026-07-13T07:10:41.139876+00:00",
+    "n_train": 423628,
+    "n_test": 105907,
+    "fraud_rate_train": 0.0023369560085735597,
     "metrics": {
-      "auc_roc": 0.9996890983286376,
-      "auc_pr": 0.9766543975349102,
+      "auc_roc": 0.9997353400119495,
+      "auc_pr": 0.9738175323773949,
       "confusion_matrix": [
         [
-          103559,
-          166
+          105351,
+          308
         ],
         [
-          7,
-          283
+          2,
+          246
         ]
       ],
       "classification_report": {
         "0": {
-          "precision": 0.9999324102504683,
-          "recall": 0.9983996143649072,
-          "f1-score": 0.9991654244516164,
-          "support": 103725.0
+          "precision": 0.999981016202671,
+          "recall": 0.9970849620003975,
+          "f1-score": 0.9985308892385267,
+          "support": 105659.0
         },
         "1": {
-          "precision": 0.6302895322939867,
-          "recall": 0.9758620689655172,
-          "f1-score": 0.7658998646820027,
-          "support": 290.0
+          "precision": 0.44404332129963897,
+          "recall": 0.9919354838709677,
+          "f1-score": 0.6134663341645885,
+          "support": 248.0
         },
-        "accuracy": 0.9983367783492766,
+        "accuracy": 0.997072903585221,
         "macro avg": {
-          "precision": 0.8151109712722275,
-          "recall": 0.9871308416652123,
-          "f1-score": 0.8825326445668096,
-          "support": 104015.0
+          "precision": 0.7220121687511549,
+          "recall": 0.9945102229356826,
+          "f1-score": 0.8059986117015576,
+          "support": 105907.0
         },
         "weighted avg": {
-          "precision": 0.998901823944576,
-          "recall": 0.9983367783492766,
-          "f1-score": 0.9985150662116203,
-          "support": 104015.0
+          "precision": 0.998679189615798,
+          "recall": 0.997072903585221,
+          "f1-score": 0.9976291923756344,
+          "support": 105907.0
         }
       }
     },
     "top_features": {
-      "transaction_type_transfer": 1.8297868967056274,
-      "sender_avg_amount_30d": 1.2508023977279663,
-      "is_known_receiver": 1.0353517532348633,
-      "amount_to_avg_ratio": 0.931721568107605,
-      "amount_xof_equivalent": 0.6909440755844116,
-      "sum_amount_last_1h": 0.6747337579727173,
-      "is_payday_window": 0.4270673096179962,
-      "is_new_device": 0.4156263470649719,
-      "minutes_since_last_incoming": 0.4108869135379791,
-      "batch_size_so_far": 0.3777208924293518
+      "is_known_receiver": 1.548738718032837,
+      "sum_amount_last_1h": 1.5227208137512207,
+      "transaction_type_transfer": 1.1006048917770386,
+      "sender_avg_amount_30d": 0.8822665810585022,
+      "customer_type_individual": 0.7365083694458008,
+      "transaction_type_deposit": 0.7129157185554504,
+      "hour": 0.6382485032081604,
+      "amount_xof_equivalent": 0.5654353499412537,
+      "amount_to_avg_ratio": 0.5521424412727356,
+      "is_new_device": 0.49413150548934937
     }
   }
 }

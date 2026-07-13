@@ -1,5 +1,6 @@
 import { FileText } from "lucide-react";
 import { EngineBreakdown } from "../../components/EngineBreakdown";
+import { MlFactorLabel } from "../../components/MlFactorLabel";
 import { RiskBadge } from "../../components/RiskBadge";
 import { ScoreGauge } from "../../components/ScoreGauge";
 import type { AnalystFeedback, TransactionAnalysis } from "../../types";
@@ -66,7 +67,6 @@ export function Investigation({ current, onReport, onFeedback }: InvestigationPr
             <label>Ville émetteur<span>{current.sender_city ?? "—"}</span></label>
             <label>Device<span className="mono">{current.device_id ?? "—"}</span></label>
             <label>Agent<span className="mono">{current.agent_id ?? "—"}</span></label>
-            <label>Batch<span className="mono">{current.batch_id ?? "—"}</span></label>
             <label>Solde avant<span>{current.balance_before_sender !== null ? formatCurrency(current.balance_before_sender, current.currency) : "—"}</span></label>
             <label>Solde après<span>{current.balance_after_sender !== null ? formatCurrency(current.balance_after_sender, current.currency) : "—"}</span></label>
             <label>Calculé le<span>{formatDateTime(current.computed_at)}</span></label>
@@ -136,9 +136,13 @@ export function Investigation({ current, onReport, onFeedback }: InvestigationPr
             <h2>Explication SHAP (modèle ML)</h2>
             <span>Facteurs les plus contributifs</span>
           </div>
+          <p className="summary">
+            Pour cette transaction précise, ces facteurs sont ceux qui ont le plus fait
+            bouger le score du modèle — dans un sens ou dans l'autre.
+          </p>
           {current.top_ml_factors.length ? (
             <ul className="reason-list columns">
-              {current.top_ml_factors.map((factor) => <li key={factor}>{factor}</li>)}
+              {current.top_ml_factors.map((factor) => <li key={factor}><MlFactorLabel factor={factor} /></li>)}
             </ul>
           ) : (
             <p className="summary">Pas de facteur ML dominant identifié.</p>
@@ -151,7 +155,7 @@ export function Investigation({ current, onReport, onFeedback }: InvestigationPr
             <span>{current.reasons.length} signaux</span>
           </div>
           <ul className="reason-list columns">
-            {current.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+            {current.reasons.map((reason) => <li key={reason}><MlFactorLabel factor={reason} /></li>)}
           </ul>
         </article>
       </div>

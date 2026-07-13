@@ -1,5 +1,7 @@
 import type {
+  Agent,
   Beneficiary,
+  CashOperationResult,
   DashboardData,
   DemoScenario,
   EvaluateAccessResult,
@@ -107,6 +109,37 @@ export function confirmTransfer(payload: {
   behaviour_amount_field_edits?: number;
 }): Promise<TransferConfirmResult> {
   return request<TransferConfirmResult>("/api/v1/wallet/transfer/confirm", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function fetchAgents(): Promise<Agent[]> {
+  return request<Agent[]>("/api/v1/wallet/agents");
+}
+
+export function depositFunds(payload: {
+  user_id: string;
+  amount: number;
+  source: "agent" | "external_momo";
+  agent_id?: string | null;
+  behaviour_time_to_complete_ms?: number;
+  behaviour_amount_field_edits?: number;
+}): Promise<CashOperationResult> {
+  return request<CashOperationResult>("/api/v1/wallet/deposit", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function withdrawFunds(payload: {
+  user_id: string;
+  agent_id: string;
+  amount: number;
+  behaviour_time_to_complete_ms?: number;
+  behaviour_amount_field_edits?: number;
+}): Promise<CashOperationResult> {
+  return request<CashOperationResult>("/api/v1/wallet/withdraw", {
     method: "POST",
     body: JSON.stringify(payload),
   });

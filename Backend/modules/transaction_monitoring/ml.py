@@ -15,7 +15,7 @@ import pandas as pd
 import shap
 
 from modules.transaction_monitoring.feature_engineering import ContextFeatures
-from shared.config.constants import CHANNELS, KYC_LEVELS, TRANSACTION_TYPES
+from shared.config.constants import CHANNELS, CUSTOMER_TYPES, KYC_LEVELS, TRANSACTION_TYPES
 from shared.config.settings import settings
 
 NUMERIC_COLUMNS = [
@@ -33,21 +33,19 @@ NUMERIC_COLUMNS = [
     "tx_count_last_1h",
     "sum_amount_last_1h",
     "distinct_receivers_last_1h",
-    "is_batch_operation",
-    "batch_size_so_far",
-    "batch_unknown_receiver_ratio",
     "is_cross_border",
     "minutes_since_last_incoming",
     "incoming_amount_ratio",
     "is_cross_border_passthrough",
     "is_new_device",
     "is_balance_drained",
-    "is_merchant_layering",
-    "agent_tx_count_last_1h",
-    "agent_distinct_senders_last_1h",
+    "passthrough_cycle_count_30d",
+    "passthrough_identified_cycle_count_30d",
+    "passthrough_distinct_sources_30d",
 ]
 CATEGORICAL_COLUMNS = {
     "kyc_level": KYC_LEVELS,
+    "customer_type": CUSTOMER_TYPES,
     "transaction_type": TRANSACTION_TYPES,
     "channel": CHANNELS,
 }
@@ -68,22 +66,20 @@ HUMAN_LABELS = {
     "tx_count_last_1h": "Fréquence de transactions (1h)",
     "sum_amount_last_1h": "Cumul des montants (1h)",
     "distinct_receivers_last_1h": "Diversité des bénéficiaires (1h)",
-    "is_batch_operation": "Fait partie d'un paiement de masse déclaré",
-    "batch_size_so_far": "Taille du lot de paiement de masse",
-    "batch_unknown_receiver_ratio": "Part de bénéficiaires inconnus dans le lot",
     "is_cross_border": "Transfert international",
     "minutes_since_last_incoming": "Délai depuis la dernière réception d'argent",
     "incoming_amount_ratio": "Ressemblance avec un montant reçu récemment",
     "is_cross_border_passthrough": "Schéma de transit transfrontalier",
     "is_new_device": "Nouvel appareil jamais utilisé",
     "is_balance_drained": "Solde vidé après la transaction",
-    "is_merchant_layering": "Évacuation rapide d'un paiement marchand reçu",
-    "agent_tx_count_last_1h": "Volume de dépôts/retraits traités par l'agent (1h)",
-    "agent_distinct_senders_last_1h": "Diversité de clients chez l'agent (1h)",
+    "passthrough_cycle_count_30d": "Cycles réception -> retrait rapide (30j)",
+    "passthrough_identified_cycle_count_30d": "Cycles avec source identifiée (30j)",
+    "passthrough_distinct_sources_30d": "Diversité des sources de financement (30j)",
 }
 
 CATEGORICAL_BASE_LABELS = {
     "kyc_level": "Niveau KYC",
+    "customer_type": "Type de client",
     "transaction_type": "Type de transaction",
     "channel": "Canal utilisé",
 }
@@ -94,13 +90,12 @@ def context_to_raw_row(features: ContextFeatures) -> dict:
     row["has_history"] = int(row["has_history"])
     row["is_known_receiver"] = int(row["is_known_receiver"])
     row["is_payday_window"] = int(row["is_payday_window"])
-    row["is_batch_operation"] = int(row["is_batch_operation"])
     row["is_cross_border"] = int(row["is_cross_border"])
     row["is_cross_border_passthrough"] = int(row["is_cross_border_passthrough"])
     row["is_new_device"] = int(row["is_new_device"])
     row["is_balance_drained"] = int(row["is_balance_drained"])
-    row["is_merchant_layering"] = int(row["is_merchant_layering"])
     row["kyc_level"] = features.kyc_level
+    row["customer_type"] = features.customer_type
     row["transaction_type"] = features.transaction_type
     row["channel"] = features.channel
     return row
@@ -143,14 +138,18 @@ class ModelBundle:
 
 
 def _describe_factor(column: str, shap_value: float) -> str:
-    sign = "+" if shap_value > 0 else "-"
+    # Formulation explicite plutôt qu'un "impact +/-" énigmatique : chaque facteur SHAP
+    # dit dans quel sens IL a fait bouger le score de CETTE transaction précise (pas si sa
+    # valeur brute est "bonne" ou "mauvaise" en soi) — cf. retour utilisateur, ce point
+    # n'était pas compris tel quel.
+    direction = "fait monter le risque" if shap_value > 0 else "fait baisser le risque"
     for base, label in CATEGORICAL_BASE_LABELS.items():
         prefix = base + "_"
         if column.startswith(prefix):
             value = column[len(prefix):]
-            return f"{label} : {value} (impact {sign})"
+            return f"{label} : {value} ({direction})"
     label = HUMAN_LABELS.get(column, column)
-    return f"{label} (impact {sign})"
+    return f"{label} ({direction})"
 
 
 @lru_cache(maxsize=1)

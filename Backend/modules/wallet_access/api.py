@@ -6,6 +6,7 @@ from modules.wallet_access.access_rules import AccessContext, evaluate_single_ru
 from modules.wallet_access.schemas import (
     AccessEventIn,
     AccessEventOut,
+    AgentOut,
     BeneficiaryIn,
     BeneficiaryOut,
     BehaviourCheckIn,
@@ -28,9 +29,14 @@ from modules.wallet_access.schemas import (
     TransferConfirmOut,
     TransferPrepareIn,
     TransferPrepareOut,
+    WalletDepositIn,
+    WalletDepositOut,
+    WalletWithdrawIn,
+    WalletWithdrawOut,
 )
 from modules.wallet_access.service import (
     BeneficiaryNotFoundError,
+    InsufficientBalanceError,
     InvalidCredentialsError,
     PhoneAlreadyRegisteredError,
     SessionNotFoundError,
@@ -208,6 +214,29 @@ def confirm_transfer(payload: TransferConfirmIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Client introuvable")
     except BeneficiaryNotFoundError:
         raise HTTPException(status_code=404, detail="Bénéficiaire introuvable")
+
+
+@wallet_router.get("/agents", response_model=list[AgentOut])
+def list_agents(db: Session = Depends(get_db)):
+    return WalletAccessService(db).list_agents()
+
+
+@wallet_router.post("/deposit", response_model=WalletDepositOut)
+def deposit(payload: WalletDepositIn, db: Session = Depends(get_db)):
+    try:
+        return WalletAccessService(db).deposit(payload)
+    except UserNotFoundError:
+        raise HTTPException(status_code=404, detail="Client introuvable")
+
+
+@wallet_router.post("/withdraw", response_model=WalletWithdrawOut)
+def withdraw(payload: WalletWithdrawIn, db: Session = Depends(get_db)):
+    try:
+        return WalletAccessService(db).withdraw(payload)
+    except UserNotFoundError:
+        raise HTTPException(status_code=404, detail="Client introuvable")
+    except InsufficientBalanceError:
+        raise HTTPException(status_code=400, detail="Solde insuffisant pour ce retrait")
 
 
 @wallet_router.get("/history", response_model=list[HistoryEntryOut])
