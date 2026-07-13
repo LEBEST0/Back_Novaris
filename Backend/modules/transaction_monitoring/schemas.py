@@ -6,7 +6,7 @@ from shared.config.constants import CHANNELS, TRANSACTION_TYPES
 
 
 class TransactionIn(BaseModel):
-    """Payload minimal envoyé par le canal d'entrée (app ou agence) pour analyse."""
+    """Payload minimal envoyé par le canal d'entrée (app, API, agent, USSD) pour analyse."""
 
     sender_phone: str = Field(examples=["+2250700000001"])
     receiver_phone: str = Field(examples=["+2250700000099"])
@@ -21,6 +21,14 @@ class TransactionIn(BaseModel):
     device_id: str | None = None
     sender_city: str | None = None
     note: str | None = None
+    batch_id: str | None = Field(
+        default=None,
+        description=(
+            "Identifiant d'une opération de paiement de masse (Clapay B2B) : les "
+            "transactions qui partagent le même batch_id sont traitées comme un seul "
+            "envoi groupé déclaré, pas comme des transferts distincts indépendants."
+        ),
+    )
     agent_id: str | None = Field(
         default=None,
         description="Agent Mobile Money ayant traité un dépôt/retrait en espèces (cash-in/cash-out).",
@@ -74,6 +82,7 @@ class TransactionAnalysisOut(BaseModel):
     receiver_phone: str
     receiver_country: str | None
     is_cross_border: bool
+    batch_id: str | None
     agent_id: str | None = None
     device_id: str | None = None
     sender_city: str | None = None
@@ -135,12 +144,6 @@ class DashboardTrendPointOut(BaseModel):
     average_score: float
 
 
-class RiskDistributionPointOut(BaseModel):
-    risk_level: str
-    count: int
-    average_score: float
-
-
 class NetworkNodeOut(BaseModel):
     id: str
     label: str
@@ -182,20 +185,3 @@ class CustomerIn(BaseModel):
     country: str = "Côte d'Ivoire"
     home_city: str = "Abidjan"
     account_created_at: datetime | None = None
-
-
-class CustomerOut(BaseModel):
-    phone: str
-    full_name: str
-    kyc_level: str
-    national_id: str | None = None
-    customer_type: str
-    operator: str
-    country: str
-    home_city: str
-    account_created_at: datetime
-    # Dernier device_id observé pour ce client (transaction la plus récente), pour que
-    # l'écran d'analyse manuelle puisse simuler un appareil "connu" ou "nouveau" à volonté.
-    last_device_id: str | None = None
-
-    model_config = ConfigDict(from_attributes=True)

@@ -28,6 +28,7 @@ def transaction_to_analysis_out(transaction: Transaction, db: Session) -> Transa
         is_cross_border=bool(
             receiver_country is not None and receiver_country != sender_country
         ),
+        batch_id=transaction.batch_id,
         agent_id=transaction.agent_id,
         device_id=transaction.device_id,
         sender_city=transaction.sender_city,

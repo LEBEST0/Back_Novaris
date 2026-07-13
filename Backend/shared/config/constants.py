@@ -4,13 +4,14 @@ TRANSACTION_TYPES = [
     "deposit",
     "withdrawal",
     "transfer",
+    "merchant_payment",
+    "airtime_purchase",
+    "bill_payment",
 ]
 
-CHANNELS = ["mobile_app", "agent"]
+CHANNELS = ["mobile_app", "ussd", "agent", "web", "api"]
 
 KYC_LEVELS = ["basic", "standard", "premium"]
-
-CUSTOMER_TYPES = ["individual", "merchant", "agent"]
 
 CURRENCY_DEFAULT = "XOF"
 

@@ -28,7 +28,8 @@ const STATUS_LABEL: Record<string, string> = {
 
 const TYPE_LABEL: Record<string, string> = {
   transfer: "Transfert",
-  deposit: "Dépôt",
+  recharge: "Recharge",
+  payment: "Paiement",
   withdrawal: "Retrait",
 };
 

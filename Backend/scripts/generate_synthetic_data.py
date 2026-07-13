@@ -3,15 +3,18 @@
 Aucune donnée personnelle réelle n'est utilisée (cf. document produit : "Données
 synthétiques : créer des transactions réalistes ... sans données personnelles").
 
-Périmètre volontairement restreint à ce que Novaris couvre réellement : les wallets
-(dépôt, retrait, transfert P2P) via l'app ou en agence — pas de paiement marchand, de
-paiement de masse B2B, ni de canaux USSD/web/API. Couvre les 18 pays où Clapay annonce
-une présence, avec des transactions domestiques et transfrontalières.
+Couvre les 18 pays où Clapay annonce une présence, avec :
+- des transactions domestiques et transfrontalières (l'interopérabilité multi-pays est
+  un vrai produit Clapay, pas un cas exotique) ;
+- des opérations de paiement de masse (Clapay B2B) : plusieurs bénéficiaires en un seul
+  lot déclaré (batch_id), pour que le modèle apprenne à ne pas les confondre avec un
+  schéma de distribution frauduleux (fan-out) ;
+- un scénario de fraude "transit transfrontalier" : réception depuis un pays, renvoi
+  quasi immédiat vers un pays différent (contournement via un pays tiers).
 
-Produit trois fichiers dans data/ :
+Produit deux fichiers dans data/ :
 - customers.csv   : les titulaires de portefeuille suivis (profil de comportement habituel)
 - transactions.csv: le flux de transactions, normal + scénarios de fraude injectés et labellisés
-- agents.csv      : le pool d'agents Mobile Money (cash-in/cash-out en agence)
 
 Usage:
     python scripts/generate_synthetic_data.py
@@ -20,6 +23,7 @@ Usage:
 import calendar
 import random
 import sys
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -115,23 +119,28 @@ KYC_LEVELS = ["basic", "standard", "premium"]
 KYC_WEIGHTS = [0.55, 0.35, 0.10]
 CUSTOMER_TYPES = ["individual", "merchant", "agent"]
 CUSTOMER_TYPE_WEIGHTS = [0.85, 0.10, 0.05]
-# Périmètre Novaris : wallet (dépôt/retrait/transfert). Le cash-in/cash-out domine
-# toujours largement le volume réel du Mobile Money — pas de répartition uniforme.
-TRANSACTION_TYPES = ["deposit", "withdrawal", "transfer"]
-TRANSACTION_TYPE_WEIGHTS = [0.40, 0.37, 0.23]  # dans l'ordre de TRANSACTION_TYPES
+TRANSACTION_TYPES = [
+    "deposit", "withdrawal", "transfer", "merchant_payment", "airtime_purchase", "bill_payment",
+]
+# Le Mobile Money reste avant tout une infrastructure de conversion cash : le cash-in
+# (deposit) et le cash-out (withdrawal) dominent largement le volume réel, le P2P
+# (transfer) ne représente qu'une fraction minoritaire de la valeur mensuelle, les
+# paiements marchands et factures encore moins — pas une répartition uniforme entre
+# les 6 types comme dans une première version de ce générateur.
+TRANSACTION_TYPE_WEIGHTS = [0.30, 0.27, 0.16, 0.12, 0.06, 0.09]  # dans l'ordre de TRANSACTION_TYPES
 AGENT_MEDIATED_TYPES = {"deposit", "withdrawal"}
-CHANNELS = ["mobile_app", "agent"]
-# Le retrait exige toujours un point de cash physique (agence) — impossible de "retirer
-# du cash" depuis l'app seule. Le dépôt, lui, peut passer soit par un agent (cash-in
-# physique), soit directement depuis un compte Mobile money externe via l'app.
-DEPOSIT_AGENT_SHARE = 0.65
+CHANNELS = ["mobile_app", "ussd", "agent", "web", "api"]
+CHANNEL_WEIGHTS = [0.45, 0.30, 0.15, 0.05, 0.05]
 
 # Montant "baseline" moyen en équivalent XOF par type de transaction (avant application
 # du facteur client et de la conversion vers la devise locale du client).
 TYPE_BASELINE_AMOUNT_XOF = {
+    "airtime_purchase": 1_500,
+    "bill_payment": 15_000,
     "deposit": 40_000,
     "withdrawal": 35_000,
     "transfer": 30_000,
+    "merchant_payment": 20_000,
 }
 CUSTOMER_TYPE_SCALE = {"individual": 1.0, "merchant": 8.0, "agent": 15.0}
 
@@ -143,20 +152,11 @@ CROSS_BORDER_ADHOC_RATE = 0.05  # part des transactions "hors contacts habituels
 FRAUD_SCENARIOS = [
     "amount_spike", "velocity_burst", "structuring", "night_fraud",
     "new_account_takeover", "fanout_mule", "cross_border_passthrough",
-    "sim_swap_takeover", "social_engineering", "mule_passthrough",
+    "sim_swap_takeover", "social_engineering", "batch_mule_fanout",
+    "merchant_layering",
 ]
 N_PER_SCENARIO = 45  # nb de clients cibles par scénario de fraude
-
-# Agents "préférés" : dans la réalité, un client revient chez le même agent de quartier
-# plutôt que d'en choisir un au hasard à chaque opération — ce qui concentre le volume
-# sur un sous-ensemble d'agents plutôt que de l'étaler uniformément (cf. discussion
-# produit : un agent Wave-like traite couramment 20+ opérations/heure en heure de pointe).
-PREFERRED_AGENT_USAGE_RATE = 0.85
-# Fenêtres de forte affluence partagées par toute la clientèle locale d'un pays (matin,
-# pause déjeuner, sortie de travail) — sans ça, les habitudes horaires individuelles de
-# chaque client (habitual_hour) restent trop dispersées pour produire de vrais pics.
-AGENT_PEAK_HOURS = [8, 13, 18]
-AGENT_PEAK_HOUR_PROBABILITY = 0.55
+N_AGENT_COLLUSION_AGENTS = 12  # nb d'agents "compromis" simulés (scénario indépendant, cf. plus bas)
 
 
 def _amount_in_local_currency(baseline_xof: float, currency: str) -> float:
@@ -179,10 +179,9 @@ class CustomerProfile:
     scale: float
     regular_receivers: list[str] = field(default_factory=list)
     habitual_hour: int = 12
-    preferred_agent_id: str | None = None
 
 
-def build_customers(n: int, agents_by_country: dict[str, list["Agent"]]) -> list[CustomerProfile]:
+def build_customers(n: int) -> list[CustomerProfile]:
     customers = []
     for _ in range(n):
         customer_type = random.choices(CUSTOMER_TYPES, weights=CUSTOMER_TYPE_WEIGHTS)[0]
@@ -198,7 +197,6 @@ def build_customers(n: int, agents_by_country: dict[str, list["Agent"]]) -> list
             created_at = NOW - timedelta(days=random.uniform(35, 900))
 
         phone, operator = random_phone_for_country(country)
-        local_agents = agents_by_country.get(country, [])
         profile = CustomerProfile(
             phone=phone,
             full_name=fake.name(),
@@ -211,7 +209,6 @@ def build_customers(n: int, agents_by_country: dict[str, list["Agent"]]) -> list
             account_created_at=created_at,
             scale=CUSTOMER_TYPE_SCALE[customer_type] * random.uniform(0.7, 1.4),
             habitual_hour=random.randint(8, 21),
-            preferred_agent_id=random.choice(local_agents).agent_id if local_agents else None,
         )
         n_contacts = random.randint(2, 6)
         contacts = []
@@ -235,16 +232,13 @@ class Agent:
 
 def build_agents() -> list[Agent]:
     """Pool d'agents Mobile Money (cash-in/cash-out), réparti par pays proportionnellement
-    à COUNTRY_WEIGHTS. Densité volontairement plus faible qu'un simple "un agent pour
-    quelques clients" : dans la réalité, un agent de quartier sert une base large de
-    clients qui reviennent régulièrement, ce qui concentre le volume et produit de vrais
-    pics de fréquentation (cf. PREFERRED_AGENT_USAGE_RATE) plutôt qu'un trafic étalé et
-    plafonné artificiellement bas."""
+    à COUNTRY_WEIGHTS. Sert à la fois à générer des dépôts/retraits réalistes (le cash-in/
+    cash-out est agent-médié) et à détecter la complicité d'agent (rules.AGENT_COLLUSION_CASHOUT)."""
     agents = []
     counter = 1
     for country in COUNTRY_NAMES:
         cities, city_weights = CITIES_BY_COUNTRY[country]
-        n_agents = max(1, round(COUNTRY_WEIGHTS[country] * 20))
+        n_agents = max(3, round(COUNTRY_WEIGHTS[country] * 140))
         for _ in range(n_agents):
             city = random.choices(cities, weights=city_weights)[0]
             agents.append(Agent(agent_id=f"AGT-{counter:05d}", country=country, city=city))
@@ -258,7 +252,7 @@ def sample_amount(transaction_type: str, scale: float, currency: str) -> float:
     return float(np.clip(amount, baseline * 0.01, baseline * 100))
 
 
-def sample_timestamp(profile: CustomerProfile, *, agent_mediated: bool = False) -> datetime:
+def sample_timestamp(profile: CustomerProfile) -> datetime:
     day_offset = random.uniform(0, SIM_DAYS)
     ts = SIM_START + timedelta(days=day_offset)
 
@@ -272,14 +266,7 @@ def sample_timestamp(profile: CustomerProfile, *, agent_mediated: bool = False) 
         if SIM_START <= candidate <= NOW:
             ts = candidate
 
-    # Une opération en agence suit les heures d'affluence partagées par toute la
-    # clientèle locale (matin, pause déjeuner, sortie de travail) plutôt que la seule
-    # habitude individuelle du client — sans ça, le volume par agent reste artificiellement
-    # étalé et ne produit jamais de vrai pic horaire (cf. AGENT_PEAK_HOURS).
-    if agent_mediated and random.random() < AGENT_PEAK_HOUR_PROBABILITY:
-        hour = int(np.clip(np.random.normal(random.choice(AGENT_PEAK_HOURS), 0.6), 0, 23))
-    else:
-        hour = int(np.clip(np.random.normal(profile.habitual_hour, 3), 0, 23))
+    hour = int(np.clip(np.random.normal(profile.habitual_hour, 3), 0, 23))
     return ts.replace(hour=hour, minute=random.randint(0, 59), second=random.randint(0, 59))
 
 
@@ -291,29 +278,14 @@ def generate_normal_transactions(profile: CustomerProfile, agents_by_country: di
     local_agents = agents_by_country.get(profile.country, [])
 
     for _ in range(n_tx):
-        transaction_type = random.choices(TRANSACTION_TYPES, weights=TRANSACTION_TYPE_WEIGHTS)[0]
-
-        # Retrait : toujours en agence (impossible de sortir du cash depuis l'app seule).
-        # Dépôt : agence (cash physique) ou app-direct (compte Mobile money externe lié) —
-        # deux façons réelles d'alimenter un wallet, cf. discussion produit.
-        agent_id = None
-        channel = "mobile_app"
-        if transaction_type == "withdrawal" or (
-            transaction_type == "deposit" and random.random() < DEPOSIT_AGENT_SHARE
-        ):
-            if local_agents:
-                use_preferred = profile.preferred_agent_id and random.random() < PREFERRED_AGENT_USAGE_RATE
-                agent_id = profile.preferred_agent_id if use_preferred else random.choice(local_agents).agent_id
-                channel = "agent"
-
-        ts = sample_timestamp(profile, agent_mediated=channel == "agent")
+        ts = sample_timestamp(profile)
         if ts < profile.account_created_at:
             continue
+        transaction_type = random.choices(TRANSACTION_TYPES, weights=TRANSACTION_TYPE_WEIGHTS)[0]
 
         if transaction_type in AGENT_MEDIATED_TYPES:
-            # Cash-in/cash-out : le client transige avec lui-même (le "bénéficiaire" du
-            # dépôt/retrait est le client lui-même côté portefeuille), que ce soit en
-            # agence ou en app-direct.
+            # Cash-in/cash-out : le client transige avec lui-même via un agent physique
+            # (le "bénéficiaire" du dépôt/retrait est le client lui-même côté portefeuille).
             receiver = profile.phone
         elif random.random() < 0.85:
             receiver = random.choice(profile.regular_receivers)
@@ -334,6 +306,12 @@ def generate_normal_transactions(profile: CustomerProfile, agents_by_country: di
         ):
             amount *= random.uniform(*PAYDAY_AMOUNT_MULTIPLIER_RANGE)
 
+        agent_id = None
+        channel = random.choices(CHANNELS, weights=CHANNEL_WEIGHTS)[0]
+        if transaction_type in AGENT_MEDIATED_TYPES and local_agents:
+            agent_id = random.choice(local_agents).agent_id
+            channel = "agent"
+
         txs.append({
             "sender_phone": profile.phone,
             "receiver_phone": receiver,
@@ -344,6 +322,7 @@ def generate_normal_transactions(profile: CustomerProfile, agents_by_country: di
             "timestamp": ts,
             "sender_city": profile.home_city,
             "device_id": f"DEV-{abs(hash(profile.phone)) % 100000}",
+            "batch_id": None,
             "agent_id": agent_id,
             "is_fraud": 0,
             "fraud_scenario": "",
@@ -351,25 +330,74 @@ def generate_normal_transactions(profile: CustomerProfile, agents_by_country: di
     return txs
 
 
-def generate_fraud_transactions(
-    profile: CustomerProfile, scenario: str, agents_by_country: dict[str, list[Agent]]
-) -> list[dict]:
+def generate_batch_payment_transactions(profile: CustomerProfile) -> list[dict]:
+    """Paiement de masse légitime (Clapay B2B) : un lot déclaré, plusieurs bénéficiaires,
+    une seule opération autorisée. Sert à entraîner le modèle à ne PAS traiter ça comme
+    un schéma de fan-out frauduleux (cf. rules.FANOUT_PATTERN, batch-aware).
+
+    Un vrai virement de paie répète les mêmes employés/fournisseurs d'un lot à l'autre —
+    contrairement à un lot frauduleux (batch_mule_fanout) qui vise des comptes neufs à
+    chaque fois. D'où un pool de bénéficiaires stable, réutilisé entre les lots, avec un
+    faible taux de renouvellement (nouvel employé/fournisseur occasionnel)."""
+    if profile.customer_type not in ("merchant", "agent"):
+        return []
+
+    txs = []
+    n_batches = np.random.poisson(8)  # ~tous les 1-2 mois sur l'année simulée
+    if n_batches == 0:
+        return txs
+
+    payroll_pool = [random_phone_for_country(profile.country)[0] for _ in range(random.randint(4, 10))]
+
+    for _ in range(n_batches):
+        ts = sample_timestamp(profile)
+        if ts < profile.account_created_at:
+            continue
+        batch_id = f"BATCH-{uuid.uuid4().hex[:10].upper()}"
+        base_amount = sample_amount("transfer", profile.scale, profile.currency)
+
+        recipients = list(payroll_pool)
+        if random.random() < 0.15:  # turnover occasionnel (nouvel employé/fournisseur)
+            new_member = random_phone_for_country(profile.country)[0]
+            payroll_pool.append(new_member)
+            recipients.append(new_member)
+
+        for receiver in recipients:
+            leg_ts = ts + timedelta(seconds=random.uniform(0, 300))
+            amount = base_amount * random.uniform(0.85, 1.15)
+            txs.append({
+                "sender_phone": profile.phone,
+                "receiver_phone": receiver,
+                "amount": round(amount, 2),
+                "currency": profile.currency,
+                "transaction_type": "transfer",
+                "channel": "api",
+                "timestamp": leg_ts,
+                "sender_city": profile.home_city,
+                "device_id": f"DEV-{abs(hash(profile.phone)) % 100000}",
+                "batch_id": batch_id,
+                "agent_id": None,
+                "is_fraud": 0,
+                "fraud_scenario": "",
+            })
+    return txs
+
+
+def generate_fraud_transactions(profile: CustomerProfile, scenario: str) -> list[dict]:
     txs = []
 
-    def base_tx(ts, receiver, amount, ttype="transfer", currency=None, device_id=None):
-        # transfer est toujours en app (wallet-to-wallet, jamais physique) ; withdrawal
-        # nécessite un agent — les scénarios ci-dessous injectent principalement des
-        # transferts frauduleux, cohérent avec channel="mobile_app" par défaut.
+    def base_tx(ts, receiver, amount, ttype="transfer", currency=None, device_id=None, batch_id=None):
         return {
             "sender_phone": profile.phone,
             "receiver_phone": receiver,
             "amount": round(amount, 2),
             "currency": currency or profile.currency,
             "transaction_type": ttype,
-            "channel": "mobile_app",
+            "channel": random.choices(CHANNELS, weights=CHANNEL_WEIGHTS)[0],
             "timestamp": ts,
             "sender_city": profile.home_city,
             "device_id": device_id or f"DEV-{abs(hash(profile.phone + scenario)) % 100000}",
+            "batch_id": batch_id,
             "agent_id": None,
             "is_fraud": 1,
             "fraud_scenario": scenario,
@@ -380,10 +408,16 @@ def generate_fraud_transactions(
     baseline = _amount_in_local_currency(TYPE_BASELINE_AMOUNT_XOF["transfer"] * profile.scale, profile.currency)
 
     if scenario == "amount_spike":
-        # Compte compromis effectuant un virement P2P d'un montant anormal (identifiants
-        # volés, achat non autorisé revendu en cash via un tiers).
+        # Compte compromis effectuant un montant anormal — via un virement P2P ou un
+        # paiement marchand (achat non autorisé avec des identifiants volés) : les deux
+        # sont des manifestations réalistes du même schéma (cf. is_merchant_layering, qui
+        # couvre le cas où l'argent est ensuite évacué après un paiement marchand REÇU —
+        # ici c'est l'inverse, un paiement marchand ENVOYÉ frauduleusement).
         amount = baseline * random.uniform(6, 15)
-        txs.append(base_tx(event_ts, random_phone_for_country(profile.country)[0], amount))
+        spike_type = random.choice(["transfer", "merchant_payment"])
+        txs.append(base_tx(
+            event_ts, random_phone_for_country(profile.country)[0], amount, ttype=spike_type,
+        ))
 
     elif scenario == "velocity_burst":
         n = random.randint(3, 6)
@@ -439,10 +473,11 @@ def generate_fraud_transactions(
             "amount": round(incoming_amount_local, 2),
             "currency": currency_for_country(origin_country),
             "transaction_type": "transfer",
-            "channel": "mobile_app",
+            "channel": random.choices(CHANNELS, weights=CHANNEL_WEIGHTS)[0],
             "timestamp": event_ts,
             "sender_city": "",
             "device_id": f"DEV-EXT-{abs(hash(incoming_sender_phone)) % 100000}",
+            "batch_id": None,
             "agent_id": None,
             "is_fraud": 0,
             "fraud_scenario": "",
@@ -471,78 +506,51 @@ def generate_fraud_transactions(
         # téléphone plutôt que d'un compte piraté (cf. rules.SOCIAL_ENGINEERING_SIGNAL).
         usual_device = f"DEV-{abs(hash(profile.phone)) % 100000}"
         amount = baseline * random.uniform(9, 16)
-        txs.append(base_tx(event_ts, random_phone_for_country(profile.country)[0], amount, device_id=usual_device))
+        channel = random.choice(["mobile_app", "web", "ussd"])
+        tx = base_tx(event_ts, random_phone_for_country(profile.country)[0], amount, device_id=usual_device)
+        tx["channel"] = channel
+        txs.append(tx)
 
-    elif scenario == "mule_passthrough":
-        # Compte mule récidiviste : encaisse (dépôt en agence ou réception d'un tiers)
-        # puis ressort l'argent quasi aussitôt, de façon répétée sur plusieurs semaines,
-        # depuis une source qui se répète (le complice qui alimente le compte) — c'est la
-        # répétition + la concentration de la source qui distingue le mule d'un usage
-        # normal ou d'un commerce (cf. rules.MULE_PASSTHROUGH_PATTERN).
-        local_agents = agents_by_country.get(profile.country, [])
-        via_agent = bool(local_agents) and random.random() < 0.5
-        funding_agent = random.choice(local_agents) if via_agent else None
-        funder_phone, _ = random_phone_for_country(profile.country)
+    elif scenario == "batch_mule_fanout":
+        # Un lot de paiement de masse déclaré (batch_id) mais envoyé quasi entièrement à
+        # des bénéficiaires jamais vus par ce client — détournement du mécanisme de
+        # paiement de masse vers des comptes mules (cf. rules.SUSPICIOUS_BATCH).
+        n = random.randint(5, 9)
+        fraud_batch_id = f"BATCH-FRAUD-{uuid.uuid4().hex[:8].upper()}"
+        for i in range(n):
+            ts = event_ts + timedelta(seconds=i * random.uniform(5, 60))
+            amount = baseline * random.uniform(1, 2.5)
+            txs.append(base_tx(
+                ts, random_phone_for_country(profile.country)[0], amount, batch_id=fraud_batch_id,
+            ))
 
-        n_cycles = random.randint(4, 7)
-        available_days = range(5, SIM_DAYS - 1)
-        cycle_days = sorted(random.sample(available_days, k=min(n_cycles, len(available_days))))
-
-        for day in cycle_days:
-            in_ts = SIM_START + timedelta(days=day, hours=random.uniform(8, 20))
-            amount = baseline * random.uniform(1.5, 4)
-
-            if funding_agent is not None:
-                txs.append({
-                    "sender_phone": profile.phone,
-                    "receiver_phone": profile.phone,
-                    "amount": round(amount, 2),
-                    "currency": profile.currency,
-                    "transaction_type": "deposit",
-                    "channel": "agent",
-                    "timestamp": in_ts,
-                    "sender_city": profile.home_city,
-                    "device_id": f"DEV-{abs(hash(profile.phone)) % 100000}",
-                    "agent_id": funding_agent.agent_id,
-                    "is_fraud": 0,
-                    "fraud_scenario": "",
-                })
-            else:
-                txs.append({
-                    "sender_phone": funder_phone,
-                    "receiver_phone": profile.phone,
-                    "amount": round(amount, 2),
-                    "currency": profile.currency,
-                    "transaction_type": "transfer",
-                    "channel": "mobile_app",
-                    "timestamp": in_ts,
-                    "sender_city": "",
-                    "device_id": f"DEV-EXT-{abs(hash(funder_phone)) % 100000}",
-                    "agent_id": None,
-                    "is_fraud": 0,
-                    "fraud_scenario": "",
-                })
-
-            out_ts = in_ts + timedelta(minutes=random.uniform(5, 45))
-            out_amount = amount * random.uniform(0.8, 1.0)
-            if local_agents and random.random() < 0.5:
-                out_agent = random.choice(local_agents)
-                txs.append({
-                    "sender_phone": profile.phone,
-                    "receiver_phone": profile.phone,
-                    "amount": round(out_amount, 2),
-                    "currency": profile.currency,
-                    "transaction_type": "withdrawal",
-                    "channel": "agent",
-                    "timestamp": out_ts,
-                    "sender_city": profile.home_city,
-                    "device_id": f"DEV-{abs(hash(profile.phone)) % 100000}",
-                    "agent_id": out_agent.agent_id,
-                    "is_fraud": 1,
-                    "fraud_scenario": scenario,
-                })
-            else:
-                txs.append(base_tx(out_ts, random_phone_for_country(profile.country)[0], out_amount))
+    elif scenario == "merchant_layering":
+        # Blanchiment via faux marchand : le profil cible se comporte comme un marchand
+        # compromis. Il reçoit un paiement marchand d'un tiers, puis évacue quasi
+        # aussitôt les fonds (retrait ou renvoi) — cf. rules.MERCHANT_LAYERING_SIGNAL.
+        payer_phone, _ = random_phone_for_country(profile.country)
+        incoming_amount = baseline * random.uniform(2, 6)
+        txs.append({
+            "sender_phone": payer_phone,
+            "receiver_phone": profile.phone,
+            "amount": round(incoming_amount, 2),
+            "currency": profile.currency,
+            "transaction_type": "merchant_payment",
+            "channel": random.choices(CHANNELS, weights=CHANNEL_WEIGHTS)[0],
+            "timestamp": event_ts,
+            "sender_city": "",
+            "device_id": f"DEV-EXT-{abs(hash(payer_phone)) % 100000}",
+            "batch_id": None,
+            "agent_id": None,
+            "is_fraud": 0,
+            "fraud_scenario": "",
+        })
+        outgoing_ts = event_ts + timedelta(minutes=random.uniform(10, 45))
+        outgoing_amount = incoming_amount * random.uniform(0.85, 1.05)
+        # "transfer" (pas "withdrawal") : une transaction de type retrait est, dans ce
+        # générateur, toujours à destination de soi-même via un agent (cf.
+        # generate_normal_transactions) — ici le faux marchand renvoie les fonds à un tiers.
+        txs.append(base_tx(outgoing_ts, random_phone_for_country(profile.country)[0], outgoing_amount))
 
     return [t for t in txs if t["timestamp"] >= profile.account_created_at]
 
@@ -575,13 +583,61 @@ def assign_fraud_targets(customers: list[CustomerProfile]) -> list[tuple[Custome
     return assignments
 
 
+def generate_agent_collusion_scenarios(
+    agents: list[Agent], customers: list[CustomerProfile]
+) -> list[dict]:
+    """Complicité d'agent (GSMA) : un agent compromis traite un volume anormal de
+    dépôts OU de retraits pour de nombreux clients différents en peu de temps.
+    - "cash-out mill" (retrait) : exfiltre du cash déjà présent sur les comptes.
+    - faux dépôt (deposit) : crédite des comptes sans cash réel remis (schéma symétrique,
+      tout aussi documenté par le GSMA côté fraude interne/agent).
+    Contrairement aux autres scénarios, le fil conducteur frauduleux est l'AGENT, pas un
+    client précis (cf. rules.AGENT_COLLUSION_CASHOUT, qui regarde l'activité de l'agent)."""
+    txs = []
+    compromised_agents = random.sample(agents, k=min(N_AGENT_COLLUSION_AGENTS, len(agents)))
+    customers_by_country: dict[str, list[CustomerProfile]] = {}
+    for c in customers:
+        customers_by_country.setdefault(c.country, []).append(c)
+
+    for agent in compromised_agents:
+        pool = customers_by_country.get(agent.country, [])
+        if len(pool) < 5:
+            continue
+        event_day = random.uniform(5, SIM_DAYS - 1)
+        event_ts = SIM_START + timedelta(days=event_day)
+        senders = random.sample(pool, k=min(random.randint(5, 8), len(pool)))
+        mode = random.choice(["withdrawal", "deposit"])
+        scenario_name = "agent_collusion_cashout" if mode == "withdrawal" else "agent_fake_deposit"
+        for i, sender in enumerate(senders):
+            if event_ts < sender.account_created_at:
+                continue
+            ts = event_ts + timedelta(minutes=i * random.uniform(2, 8))
+            amount = _amount_in_local_currency(random.uniform(80_000, 300_000) * sender.scale, sender.currency)
+            txs.append({
+                "sender_phone": sender.phone,
+                "receiver_phone": sender.phone,
+                "amount": round(amount, 2),
+                "currency": sender.currency,
+                "transaction_type": mode,
+                "channel": "agent",
+                "timestamp": ts,
+                "sender_city": agent.city,
+                "device_id": f"DEV-{abs(hash(sender.phone)) % 100000}",
+                "batch_id": None,
+                "agent_id": agent.agent_id,
+                "is_fraud": 1,
+                "fraud_scenario": scenario_name,
+            })
+    return txs
+
+
 def apply_balance_simulation(all_txs: list[dict], customers: list[CustomerProfile]) -> None:
     """Simule un solde de portefeuille par client en rejouant ses transactions dans
     l'ordre chronologique (avant/après, émetteur uniquement) — inspiré des travaux de
     référence sur la simulation Mobile Money (PaySim, MoMTSim), où le solde est l'une des
     variables les plus prédictives (ex : compte vidé à zéro). Modifie `all_txs` en place.
     """
-    OUTFLOW_TYPES = {"withdrawal", "transfer"}
+    OUTFLOW_TYPES = {"withdrawal", "transfer", "merchant_payment", "bill_payment", "airtime_purchase"}
     DRAIN_SCENARIOS = {"amount_spike", "new_account_takeover", "sim_swap_takeover"}
 
     scale_by_phone = {c.phone: c.scale for c in customers}
@@ -617,20 +673,22 @@ def apply_balance_simulation(all_txs: list[dict], customers: list[CustomerProfil
 
 
 def main():
+    customers = build_customers(NUM_CUSTOMERS)
     agents = build_agents()
     agents_by_country: dict[str, list[Agent]] = {}
     for a in agents:
         agents_by_country.setdefault(a.country, []).append(a)
 
-    customers = build_customers(NUM_CUSTOMERS, agents_by_country)
-
     all_txs: list[dict] = []
 
     for profile in customers:
         all_txs.extend(generate_normal_transactions(profile, agents_by_country))
+        all_txs.extend(generate_batch_payment_transactions(profile))
 
     for profile, scenario in assign_fraud_targets(customers):
-        all_txs.extend(generate_fraud_transactions(profile, scenario, agents_by_country))
+        all_txs.extend(generate_fraud_transactions(profile, scenario))
+
+    all_txs.extend(generate_agent_collusion_scenarios(agents, customers))
 
     apply_balance_simulation(all_txs, customers)
 
@@ -664,15 +722,8 @@ def main():
     print(df_tx.groupby("transaction_type")["is_fraud"].agg(["sum", "mean"]))
     print("\nDistribution des types de transaction :")
     print(df_tx["transaction_type"].value_counts(normalize=True).round(3))
-    print("\nDistribution des canaux :")
-    print(df_tx["channel"].value_counts(normalize=True).round(3))
+    print("\nOpérations de paiement de masse (lots distincts) :", df_tx["batch_id"].nunique())
     print("\nTransactions avec agent_id :", df_tx["agent_id"].notna().sum(), "/", len(df_tx))
-
-    agent_tx = df_tx[df_tx["agent_id"].notna()].copy()
-    agent_tx["hour_bucket"] = agent_tx["timestamp"].dt.floor("h")
-    per_agent_hour = agent_tx.groupby(["agent_id", "hour_bucket"]).size()
-    print("\nVolume horaire par agent (heures avec au moins 1 opération) :")
-    print(per_agent_hour.describe(percentiles=[.5, .75, .9, .95, .99]))
     print("\nRépartition pays (clients) :")
     print(df_customers["country"].value_counts())
     print("\nRépartition opérateurs (clients) :")

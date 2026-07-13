@@ -5,12 +5,10 @@ from api.dependencies import get_db
 from modules.transaction_monitoring.presenters import transaction_to_analysis_out
 from modules.transaction_monitoring.repository import TransactionRepository
 from modules.transaction_monitoring.schemas import (
-    CustomerOut,
     DashboardKpisOut,
     DashboardTrendPointOut,
     FeedbackIn,
     NetworkGraphOut,
-    RiskDistributionPointOut,
     TransactionAnalysisOut,
     TransactionIn,
 )
@@ -18,31 +16,6 @@ from modules.transaction_monitoring.service import TransactionMonitoringService
 
 router = APIRouter(prefix="/api/v1/transactions", tags=["transaction-monitoring"])
 dashboard_router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
-customers_router = APIRouter(prefix="/api/v1/customers", tags=["customers"])
-
-
-@customers_router.get("", response_model=list[CustomerOut])
-def search_customers(q: str = "", limit: int = 20, db: Session = Depends(get_db)):
-    """Alimente le sélecteur de compte de l'écran Analyse manuelle (Admin) : q vide
-    retourne les clients les plus récemment créés, sinon filtre par numéro/nom."""
-    limit = max(1, min(limit, 50))
-    repo = TransactionRepository(db)
-    customers = repo.search_customers(q, limit=limit)
-    return [
-        CustomerOut(
-            phone=c.phone,
-            full_name=c.full_name,
-            kyc_level=c.kyc_level,
-            national_id=c.national_id,
-            customer_type=c.customer_type,
-            operator=c.operator,
-            country=c.country,
-            home_city=c.home_city,
-            account_created_at=c.account_created_at,
-            last_device_id=repo.get_last_device_id(c.phone),
-        )
-        for c in customers
-    ]
 
 
 @router.post("/analyze", response_model=TransactionAnalysisOut)
@@ -98,8 +71,3 @@ def dashboard_kpis(db: Session = Depends(get_db)):
 def dashboard_trend(days: int = 7, db: Session = Depends(get_db)):
     days = max(1, min(days, 90))
     return TransactionRepository(db).get_dashboard_trend(days=days)
-
-
-@dashboard_router.get("/risk-distribution", response_model=list[RiskDistributionPointOut])
-def dashboard_risk_distribution(db: Session = Depends(get_db)):
-    return TransactionRepository(db).get_risk_distribution()

@@ -127,18 +127,16 @@ def seed_transactions(db, customers: list[Customer]) -> dict[str, int]:
             ts = day_start.replace(hour=hour, minute=random.randint(0, 59), second=random.randint(0, 59))
             amount = round(random.choice([2000, 5000, 8000, 15000, 25000, 40000, 60000]) * random.uniform(0.85, 1.2))
             tx_type = random.choices(
-                ["transfer", "deposit", "withdrawal"],
-                weights=[0.40, 0.32, 0.28],
+                ["transfer", "deposit", "withdrawal", "merchant_payment", "bill_payment", "airtime_purchase"],
+                weights=[0.42, 0.16, 0.16, 0.12, 0.08, 0.06],
             )[0]
-            channel = "agent" if tx_type == "withdrawal" or (tx_type == "deposit" and random.random() < 0.65) else "mobile_app"
             decision = analyze(
                 service,
                 sender_phone=sender.phone,
                 receiver_phone=receiver_phone,
                 amount=amount,
                 transaction_type=tx_type,
-                channel=channel,
-                agent_id="AG-DEMO01" if channel == "agent" else None,
+                channel=random.choice(["mobile_app", "ussd", "agent", "web"]),
                 sender_city=sender.home_city,
                 device_id=f"DEV-{sender.customer_id[-6:]}",
                 timestamp=ts,
@@ -158,7 +156,7 @@ def seed_transactions(db, customers: list[Customer]) -> dict[str, int]:
         receiver_phone=receiver_phone,
         amount=780000,
         transaction_type="transfer",
-        channel="mobile_app",
+        channel="web",
         sender_city=s.home_city,
         timestamp=NOW.replace(hour=2, minute=40),
     )
@@ -206,34 +204,39 @@ def seed_transactions(db, customers: list[Customer]) -> dict[str, int]:
         )
         record(decision)
 
-    # 4) Compte mule récidiviste : cycles dépôt (même agent) -> retrait rapide, répétés
-    # sur plusieurs semaines — cf. rules.MULE_PASSTHROUGH_PATTERN.
-    s = flagged_senders[3]
+    # 4) Agent + device suspects : complicité agent (cash-out répété, plusieurs clients).
     agent_id = "AG-DEMO01"
-    for i, days_ago in enumerate([28, 21, 14, 7, 1]):
-        cycle_start = NOW - timedelta(days=days_ago, hours=random.uniform(0, 3))
-        amount = random.randint(90000, 140000)
-        analyze(
-            service,
-            sender_phone=s.phone,
-            receiver_phone=s.phone,
-            amount=amount,
-            transaction_type="deposit",
-            channel="agent",
-            agent_id=agent_id,
-            sender_city=s.home_city,
-            timestamp=cycle_start,
-        )
+    for i in range(4):
+        s = random.choice(customers)
         decision = analyze(
             service,
             sender_phone=s.phone,
             receiver_phone=s.phone,
-            amount=round(amount * random.uniform(0.85, 0.98)),
+            amount=random.randint(80000, 120000),
             transaction_type="withdrawal",
             channel="agent",
             agent_id=agent_id,
             sender_city=s.home_city,
-            timestamp=cycle_start + timedelta(minutes=random.uniform(10, 40)),
+            timestamp=NOW - timedelta(minutes=10 - i * 2),
+        )
+        record(decision)
+    record(decision)
+
+    # 5) Paiement de masse (batch) légitime : mêmes bénéficiaires réutilisés.
+    s = flagged_senders[3]
+    batch_id = "BATCH-DEMO01"
+    payroll = [random_phone_for_country(s.country)[0] for _ in range(5)]
+    for receiver_phone in payroll:
+        decision = analyze(
+            service,
+            sender_phone=s.phone,
+            receiver_phone=receiver_phone,
+            amount=150000,
+            transaction_type="transfer",
+            channel="api",
+            batch_id=batch_id,
+            sender_city=s.home_city,
+            timestamp=NOW - timedelta(hours=3),
         )
         record(decision)
 

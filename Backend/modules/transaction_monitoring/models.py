@@ -39,7 +39,7 @@ class Customer(Base):
 
 
 class Transaction(Base):
-    """Transaction Mobile Money brute reçue par le canal d'entrée (app ou agence)."""
+    """Transaction Mobile Money brute reçue par le canal d'entrée (API, app, agent, USSD)."""
 
     __tablename__ = "transactions"
 
@@ -55,6 +55,7 @@ class Transaction(Base):
     device_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     sender_city: Mapped[str | None] = mapped_column(String(60), nullable=True)
     note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    batch_id: Mapped[str | None] = mapped_column(String(40), index=True, nullable=True)
     agent_id: Mapped[str | None] = mapped_column(String(20), index=True, nullable=True)
     # Solde du portefeuille de l'émetteur avant/après la transaction, si le système
     # appelant (Clapay) les transmet — signal fortement prédictif documenté par les

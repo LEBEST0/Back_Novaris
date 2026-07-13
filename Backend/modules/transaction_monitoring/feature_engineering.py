@@ -21,8 +21,7 @@ from datetime import datetime, timedelta
 from shared.utils.currency import to_xof_equivalent
 
 # Fenêtre de recherche d'une transaction entrante récente pour détecter un schéma de
-# transit ("passthrough") : reçu puis renvoyé très vite vers un autre pays, ou vers un
-# compte mule (cf. PASSTHROUGH_CYCLE_WINDOW_DAYS ci-dessous).
+# transit ("passthrough") : reçu puis renvoyé très vite vers un autre pays.
 PASSTHROUGH_WINDOW_MINUTES = 60
 PASSTHROUGH_AMOUNT_RATIO_RANGE = (0.7, 1.3)
 NO_INCOMING_SENTINEL_MINUTES = 999_999.0
@@ -30,11 +29,9 @@ NO_INCOMING_SENTINEL_MINUTES = 999_999.0
 # Solde après transaction considéré comme "compte vidé" (équivalent XOF, proche de zéro).
 BALANCE_DRAINED_THRESHOLD_XOF = 500.0
 
-# Fenêtre d'historique pour détecter un compte mule récidiviste (cycles répétés
-# dépôt/réception -> retrait rapide, cf. rules.MULE_PASSTHROUGH_PATTERN). Un cycle isolé
-# est un usage normal (ex. dépôt puis envoi immédiat à un proche) ; c'est la répétition
-# sur la durée qui distingue le mule — les seuils de déclenchement vivent dans rules.py.
-PASSTHROUGH_CYCLE_WINDOW_DAYS = 30
+# Nombre minimum de bénéficiaires déjà vus dans le lot avant d'évaluer si CE lot précis
+# est suspect (évite un faux positif sur la toute première transaction d'un lot légitime).
+BATCH_MIN_LEGS_BEFORE_CHECK = 3
 
 # Comportement de saisie côté canal appelant (ex. Amani Wallet), transmis en option — pas
 # une variable ML (dataset synthétique non ré-entraîné avec ce signal), seulement une
@@ -51,8 +48,7 @@ class HistoryEntry:
     receiver_phone: str
     amount_xof_equivalent: float
     created_at: datetime
-    transaction_type: str = "transfer"
-    agent_id: str | None = None
+    batch_id: str | None = None
     device_id: str | None = None
 
 
@@ -60,62 +56,12 @@ class HistoryEntry:
 class IncomingEntry:
     """Transaction reçue par le client (lui en tant que destinataire), utilisée pour
     détecter un schéma de transit transfrontalier (reçu d'un pays, renvoyé vers un autre)
-    ou un cycle de passage type compte mule (reçu puis retiré/renvoyé rapidement,
-    répété dans le temps)."""
+    ou de blanchiment via faux marchand (paiement marchand reçu, puis évacué)."""
 
     sender_country: str | None
     amount_xof_equivalent: float
     created_at: datetime
     transaction_type: str = "transfer"
-    sender_phone: str | None = None
-
-
-@dataclass
-class PassthroughLeg:
-    """Une jambe entrante ou sortante du compte analysé, utilisée pour détecter des
-    cycles dépôt/réception -> retrait rapide (cf. compute_passthrough_cycles)."""
-
-    direction: str  # "in" | "out"
-    amount_xof_equivalent: float
-    created_at: datetime
-    # Identité de la source, uniquement pour les jambes entrantes : numéro de l'émetteur
-    # (transfert reçu) ou "agent:<id>" (dépôt en agence). None si la source n'est pas
-    # traçable (ex. dépôt direct depuis un compte Mobile money externe non modélisé).
-    source_identity: str | None = None
-
-
-def compute_passthrough_cycles(legs: list["PassthroughLeg"]) -> tuple[int, int, int]:
-    """Pour chaque jambe entrante, cherche une jambe sortante d'un montant équivalent
-    dans les PASSTHROUGH_WINDOW_MINUTES qui suivent — un cycle complet. Retourne
-    (nombre de cycles, nombre de cycles dont la source est identifiée, nombre de
-    sources distinctes parmi ces cycles identifiés). Une jambe sortante peut clore
-    plusieurs cycles entrants (simplification volontaire : c'est un signal de risque,
-    pas un grand livre comptable précis)."""
-    incoming = sorted((leg for leg in legs if leg.direction == "in"), key=lambda leg: leg.created_at)
-    outgoing = sorted((leg for leg in legs if leg.direction == "out"), key=lambda leg: leg.created_at)
-
-    cycle_count = 0
-    identified_sources: list[str] = []
-    for inc in incoming:
-        if inc.amount_xof_equivalent <= 0:
-            continue
-        matched = False
-        for out in outgoing:
-            if out.created_at <= inc.created_at:
-                continue
-            delta_minutes = (out.created_at - inc.created_at).total_seconds() / 60
-            if delta_minutes > PASSTHROUGH_WINDOW_MINUTES:
-                break  # outgoing triées par date : inutile de chercher plus loin
-            ratio = out.amount_xof_equivalent / inc.amount_xof_equivalent
-            if PASSTHROUGH_AMOUNT_RATIO_RANGE[0] <= ratio <= PASSTHROUGH_AMOUNT_RATIO_RANGE[1]:
-                matched = True
-                break
-        if matched:
-            cycle_count += 1
-            if inc.source_identity is not None:
-                identified_sources.append(inc.source_identity)
-
-    return cycle_count, len(identified_sources), len(set(identified_sources))
 
 
 def is_payday_window(timestamp: datetime) -> bool:
@@ -147,19 +93,19 @@ class ContextFeatures:
     tx_count_last_1h: int
     sum_amount_last_1h: float
     distinct_receivers_last_1h: int
+    is_batch_operation: bool
+    batch_size_so_far: int
+    batch_unknown_receiver_ratio: float
     is_cross_border: bool
     minutes_since_last_incoming: float
     incoming_amount_ratio: float
     is_cross_border_passthrough: bool
     is_new_device: bool
     is_balance_drained: bool
-    # Cycles dépôt/réception -> retrait rapide sur 30 jours (cf. compute_passthrough_cycles)
-    # — signal de compte mule récidiviste, indépendant du canal (app ou agence).
-    passthrough_cycle_count_30d: int
-    passthrough_identified_cycle_count_30d: int
-    passthrough_distinct_sources_30d: int
+    is_merchant_layering: bool
+    agent_tx_count_last_1h: int
+    agent_distinct_senders_last_1h: int
     kyc_level: str
-    customer_type: str
     transaction_type: str
     channel: str
     # Comportement de saisie (optionnel, cf. BEHAVIOUR_VERY_FAST_MS_THRESHOLD ci-dessus) —
@@ -186,17 +132,19 @@ class ContextFeatures:
             "tx_count_last_1h": self.tx_count_last_1h,
             "sum_amount_last_1h": self.sum_amount_last_1h,
             "distinct_receivers_last_1h": self.distinct_receivers_last_1h,
+            "is_batch_operation": self.is_batch_operation,
+            "batch_size_so_far": self.batch_size_so_far,
+            "batch_unknown_receiver_ratio": self.batch_unknown_receiver_ratio,
             "is_cross_border": self.is_cross_border,
             "minutes_since_last_incoming": self.minutes_since_last_incoming,
             "incoming_amount_ratio": self.incoming_amount_ratio,
             "is_cross_border_passthrough": self.is_cross_border_passthrough,
             "is_new_device": self.is_new_device,
             "is_balance_drained": self.is_balance_drained,
-            "passthrough_cycle_count_30d": self.passthrough_cycle_count_30d,
-            "passthrough_identified_cycle_count_30d": self.passthrough_identified_cycle_count_30d,
-            "passthrough_distinct_sources_30d": self.passthrough_distinct_sources_30d,
+            "is_merchant_layering": self.is_merchant_layering,
+            "agent_tx_count_last_1h": self.agent_tx_count_last_1h,
+            "agent_distinct_senders_last_1h": self.agent_distinct_senders_last_1h,
             "kyc_level": self.kyc_level,
-            "customer_type": self.customer_type,
             "transaction_type": self.transaction_type,
             "channel": self.channel,
         }
@@ -215,18 +163,20 @@ def compute_context_features(
     currency: str = "XOF",
     sender_country: str | None = None,
     receiver_country: str | None = None,
-    customer_type: str = "individual",
+    batch_id: str | None = None,
     incoming_history: list[IncomingEntry] | None = None,
     device_id: str | None = None,
     balance_after_sender: float | None = None,
+    agent_tx_count_last_1h: int = 0,
+    agent_distinct_senders_last_1h: int = 0,
     behaviour_time_to_complete_ms: int | None = None,
     behaviour_amount_field_edits: int | None = None,
 ) -> ContextFeatures:
     """prior_history doit contenir uniquement les transactions du même émetteur
     strictement antérieures à `timestamp` (triées ou non, peu importe ici), avec des
     montants déjà normalisés en équivalent XOF (HistoryEntry.amount_xof_equivalent).
-    incoming_history : transferts reçus par ce client (lui en tant que destinataire),
-    utilisée pour la détection de transit transfrontalier et de cycles type mule."""
+    incoming_history : transactions reçues par ce client (lui en tant que destinataire),
+    utilisée uniquement pour la détection de transit transfrontalier."""
 
     incoming_history = incoming_history or []
     amount_xof_equivalent = to_xof_equivalent(amount, currency)
@@ -236,8 +186,19 @@ def compute_context_features(
     window_10min = timestamp - timedelta(minutes=10)
 
     past_30d = [h for h in prior_history if window_30d <= h.created_at < timestamp]
-    past_1h = [h for h in prior_history if window_1h <= h.created_at < timestamp]
-    past_10min = [h for h in prior_history if window_10min <= h.created_at < timestamp]
+    # Les transactions qui font partie du même lot déclaré (paiement de masse) ne
+    # comptent pas comme des événements de vélocité/fan-out distincts : un envoi groupé
+    # à 10 bénéficiaires est une opération légitime unique, pas 10 signaux de risque.
+    past_1h = [
+        h
+        for h in prior_history
+        if window_1h <= h.created_at < timestamp and not (batch_id and h.batch_id == batch_id)
+    ]
+    past_10min = [
+        h
+        for h in prior_history
+        if window_10min <= h.created_at < timestamp and not (batch_id and h.batch_id == batch_id)
+    ]
 
     has_history = len(prior_history) > 0
     sender_avg_amount_30d = (
@@ -261,6 +222,7 @@ def compute_context_features(
     minutes_since_last_incoming = NO_INCOMING_SENTINEL_MINUTES
     incoming_amount_ratio = 0.0
     is_cross_border_passthrough = False
+    is_merchant_layering = False
     if past_incoming:
         last_incoming = max(past_incoming, key=lambda h: h.created_at)
         minutes_since_last_incoming = (timestamp - last_incoming.created_at).total_seconds() / 60
@@ -277,34 +239,32 @@ def compute_context_features(
         )
         is_cross_border_passthrough = recent and same_amount and different_country
 
-    # Compte mule récidiviste : on reconstitue les jambes entrantes/sortantes de CE
-    # compte sur 30 jours (ses propres dépôts/retraits/transferts + les transferts reçus
-    # d'un tiers) et on cherche des cycles réception -> sortie rapide répétés, avec la
-    # source de financement identifiée quand c'est possible (cf. compute_passthrough_cycles).
-    cycle_window_start = timestamp - timedelta(days=PASSTHROUGH_CYCLE_WINDOW_DAYS)
-    passthrough_legs: list[PassthroughLeg] = []
-    for h in prior_history:
-        if not (cycle_window_start <= h.created_at < timestamp):
-            continue
-        if h.transaction_type == "deposit":
-            source_identity = f"agent:{h.agent_id}" if h.agent_id else None
-            passthrough_legs.append(PassthroughLeg("in", h.amount_xof_equivalent, h.created_at, source_identity))
-        elif h.transaction_type in {"withdrawal", "transfer"}:
-            passthrough_legs.append(PassthroughLeg("out", h.amount_xof_equivalent, h.created_at))
-    for h in incoming_history:
-        if h.transaction_type == "transfer" and cycle_window_start <= h.created_at < timestamp:
-            passthrough_legs.append(PassthroughLeg("in", h.amount_xof_equivalent, h.created_at, h.sender_phone))
-    # La transaction en cours peut elle-même clore un cycle (le retrait qui vide ce qui
-    # vient d'être reçu) — on veut le détecter immédiatement, pas seulement à la
-    # prochaine transaction.
-    if transaction_type in {"withdrawal", "transfer"}:
-        passthrough_legs.append(PassthroughLeg("out", amount_xof_equivalent, timestamp))
+        # Blanchiment via faux marchand : un paiement marchand reçu est évacué (retrait ou
+        # renvoi) quasi immédiatement, pour un montant similaire — schéma indépendant du
+        # pays (contrairement au transit transfrontalier ci-dessus).
+        is_merchant_layering = (
+            recent
+            and same_amount
+            and last_incoming.transaction_type == "merchant_payment"
+            and transaction_type in {"withdrawal", "transfer"}
+        )
 
-    (
-        passthrough_cycle_count_30d,
-        passthrough_identified_cycle_count_30d,
-        passthrough_distinct_sources_30d,
-    ) = compute_passthrough_cycles(passthrough_legs)
+    # Un lot déclaré (paiement de masse) n'est pas automatiquement légitime : un compte
+    # compromis peut détourner ce mécanisme pour disperser des fonds vers des comptes
+    # mules sous couvert d'une opération "groupée". On évalue la part de bénéficiaires du
+    # lot en cours qui n'étaient pas déjà connus du client EN DEHORS de ce lot (un vrai
+    # virement de paie répète généralement les mêmes employés/fournisseurs).
+    batch_size_so_far = 0
+    batch_unknown_receiver_ratio = 0.0
+    if batch_id:
+        non_batch_known_receivers = {
+            h.receiver_phone for h in prior_history if h.batch_id != batch_id
+        }
+        batch_receivers = [h.receiver_phone for h in prior_history if h.batch_id == batch_id]
+        batch_receivers.append(receiver_phone)
+        batch_size_so_far = len(batch_receivers)
+        unknown_count = sum(1 for r in batch_receivers if r not in non_batch_known_receivers)
+        batch_unknown_receiver_ratio = unknown_count / batch_size_so_far
 
     # Changement d'appareil brutal sur un compte établi : signal SIM swap / prise de
     # contrôle de compte (module SIM Swap Intelligence de la roadmap, simplifié ici).
@@ -348,17 +308,19 @@ def compute_context_features(
         tx_count_last_1h=len(past_1h),
         sum_amount_last_1h=sum(h.amount_xof_equivalent for h in past_1h),
         distinct_receivers_last_1h=len({h.receiver_phone for h in past_1h}),
+        is_batch_operation=batch_id is not None,
+        batch_size_so_far=batch_size_so_far,
+        batch_unknown_receiver_ratio=batch_unknown_receiver_ratio,
         is_cross_border=is_cross_border,
         minutes_since_last_incoming=minutes_since_last_incoming,
         incoming_amount_ratio=incoming_amount_ratio,
         is_cross_border_passthrough=is_cross_border_passthrough,
         is_new_device=is_new_device,
         is_balance_drained=is_balance_drained,
-        passthrough_cycle_count_30d=passthrough_cycle_count_30d,
-        passthrough_identified_cycle_count_30d=passthrough_identified_cycle_count_30d,
-        passthrough_distinct_sources_30d=passthrough_distinct_sources_30d,
+        is_merchant_layering=is_merchant_layering,
+        agent_tx_count_last_1h=agent_tx_count_last_1h,
+        agent_distinct_senders_last_1h=agent_distinct_senders_last_1h,
         kyc_level=kyc_level,
-        customer_type=customer_type,
         transaction_type=transaction_type,
         channel=channel,
         behaviour_time_to_complete_ms=(

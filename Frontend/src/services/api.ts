@@ -1,10 +1,8 @@
 import type {
   AnalystFeedback,
-  Customer,
   DashboardKpis,
   DashboardTrendPoint,
   NetworkGraph,
-  RiskDistributionPoint,
   TransactionAnalysis,
   TransactionRequest,
 } from "../types";
@@ -58,14 +56,6 @@ export async function fetchDashboardKpis(): Promise<DashboardKpis> {
 
 export async function fetchDashboardTrend(days = 7): Promise<DashboardTrendPoint[]> {
   return request<DashboardTrendPoint[]>(`/api/v1/dashboard/trend?days=${days}`);
-}
-
-export async function fetchRiskDistribution(): Promise<RiskDistributionPoint[]> {
-  return request<RiskDistributionPoint[]>("/api/v1/dashboard/risk-distribution");
-}
-
-export async function searchCustomers(q: string, limit = 20): Promise<Customer[]> {
-  return request<Customer[]>(`/api/v1/customers?q=${encodeURIComponent(q)}&limit=${limit}`);
 }
 
 export async function fetchNetworkGraph(limit = 500): Promise<NetworkGraph> {

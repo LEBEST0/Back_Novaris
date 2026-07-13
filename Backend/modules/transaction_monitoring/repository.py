@@ -53,23 +53,38 @@ class TransactionRepository:
                 receiver_phone=r.receiver_phone,
                 amount_xof_equivalent=to_xof_equivalent(r.amount, r.currency),
                 created_at=r.created_at,
-                transaction_type=r.transaction_type,
-                agent_id=r.agent_id,
+                batch_id=r.batch_id,
                 device_id=r.device_id,
             )
             for r in rows
         ]
 
+    def get_agent_recent_activity(self, agent_id: str, *, before: datetime) -> tuple[int, int]:
+        """(nombre de transactions, nombre de clients distincts) traités par cet agent
+        dans l'heure précédente, tous émetteurs confondus — détecte un agent qui traite
+        un volume anormal pour de nombreux clients différents en peu de temps (complicité
+        agent / "cash-out mill", cf. rules.AGENT_COLLUSION_CASHOUT)."""
+        window_start = before - timedelta(hours=1)
+        row = self.db.execute(
+            select(
+                func.count(Transaction.transaction_id),
+                func.count(func.distinct(Transaction.sender_phone)),
+            )
+            .where(Transaction.agent_id == agent_id)
+            .where(Transaction.created_at >= window_start)
+            .where(Transaction.created_at < before)
+        ).one()
+        return int(row[0] or 0), int(row[1] or 0)
+
     def get_receiver_history(self, receiver_phone: str, *, before: datetime) -> list[IncomingEntry]:
-        """Transferts reçus par ce numéro (lui en tant que destinataire) sur la même
-        fenêtre de 30 jours que get_sender_history — utilisée pour la détection de transit
-        transfrontalier (reçu puis renvoyé rapidement vers un autre pays) et de cycles
-        type compte mule (cf. feature_engineering.compute_passthrough_cycles)."""
-        window_start = before - timedelta(days=HISTORY_WINDOW_DAYS)
+        """Transactions reçues par ce numéro (lui en tant que destinataire), utilisée pour
+        détecter un schéma de transit transfrontalier (reçu puis renvoyé rapidement vers
+        un autre pays) ou de blanchiment via faux marchand (paiement marchand reçu puis
+        évacué). Fenêtre courte : ces schémas se jouent en minutes/heures, pas en semaines."""
+        window_start = before - timedelta(hours=6)
         rows = self.db.scalars(
             select(Transaction)
             .where(Transaction.receiver_phone == receiver_phone)
-            .where(Transaction.transaction_type == "transfer")
             .where(Transaction.created_at >= window_start)
             .where(Transaction.created_at < before)
         ).all()
@@ -79,7 +94,6 @@ class TransactionRepository:
                 amount_xof_equivalent=to_xof_equivalent(r.amount, r.currency),
                 created_at=r.created_at,
                 transaction_type=r.transaction_type,
-                sender_phone=r.sender_phone,
             )
             for r in rows
         ]
@@ -112,6 +126,7 @@ class TransactionRepository:
             device_id=payload.device_id,
             sender_city=payload.sender_city,
             note=payload.note,
+            batch_id=payload.batch_id,
             agent_id=payload.agent_id,
             balance_before_sender=payload.balance_before_sender,
             balance_after_sender=payload.balance_after_sender,
@@ -171,29 +186,6 @@ class TransactionRepository:
             return {}
         rows = self.db.scalars(select(Customer).where(Customer.phone.in_(phones))).all()
         return {c.phone: c for c in rows}
-
-    def search_customers(self, query: str, limit: int = 20) -> list[Customer]:
-        """Recherche par numéro ou nom (préfixe/sous-chaîne) — alimente le sélecteur de
-        compte de l'écran Analyse manuelle (Admin), qui doit pouvoir choisir un client
-        réel de la base plutôt que de saisir un numéro au hasard."""
-        like = f"%{query}%"
-        return list(
-            self.db.scalars(
-                select(Customer)
-                .where(Customer.phone.ilike(like) | Customer.full_name.ilike(like))
-                .order_by(Customer.account_created_at.desc())
-                .limit(limit)
-            )
-        )
-
-    def get_last_device_id(self, phone: str) -> str | None:
-        return self.db.scalar(
-            select(Transaction.device_id)
-            .where(Transaction.sender_phone == phone)
-            .where(Transaction.device_id.is_not(None))
-            .order_by(Transaction.created_at.desc())
-            .limit(1)
-        )
 
     def set_feedback(self, transaction_id: str, *, feedback: str, note: str | None) -> Transaction | None:
         transaction = self.get_transaction(transaction_id)
@@ -259,27 +251,6 @@ class TransactionRepository:
             "fraud_amount_confirmed": fraud_amount_confirmed,
             "false_positive_rate": false_positive_rate,
         }
-
-    def get_risk_distribution(self) -> list[dict]:
-        """Répartition par niveau de risque calculée sur TOUTE la base (pas un échantillon
-        récent côté client) — un décompte qui baisserait sans suppression donnerait
-        l'impression d'un bug, cf. Dashboard "Répartition des risques"."""
-        rows = self.db.execute(
-            select(
-                TransactionAnalysis.risk_level,
-                func.count(TransactionAnalysis.id),
-                func.avg(TransactionAnalysis.final_score),
-            ).group_by(TransactionAnalysis.risk_level)
-        ).all()
-        by_level = {row[0]: (int(row[1]), float(row[2] or 0.0)) for row in rows}
-        return [
-            {
-                "risk_level": level,
-                "count": by_level.get(level, (0, 0.0))[0],
-                "average_score": round(by_level.get(level, (0, 0.0))[1], 1),
-            }
-            for level in ["low", "moderate", "high", "critical"]
-        ]
 
     def get_dashboard_trend(self, days: int = 7) -> list[dict]:
         """Nombre de transactions/alertes/score moyen par jour, sur les `days` derniers

@@ -5,13 +5,8 @@ transaction Mobile Money avant validation et retourne un score, une décision et
 explicables, en combinant un **moteur de règles** et un **modèle ML (XGBoost)**.
 
 Conçu en tenant compte du fonctionnement réel d'une passerelle de paiement (Clapay) :
-multi-pays, multi-devises et transferts transfrontaliers sont des cas normaux du produit, pas
-des exceptions — voir [Modélisation multi-pays](#modélisation-multi-pays-et-passerelle-de-paiement).
-
-**Périmètre volontairement restreint** aux wallets (dépôt, retrait, transfert P2P) via l'app
-ou en agence physique — pas de paiement marchand, pas de paiement de masse B2B, pas de canaux
-USSD/web/API. Ces cas n'étaient pas représentatifs des fintechs ciblées par Novaris et ont été
-retirés (règles, dataset synthétique, schéma) plutôt que laissés comme angle mort silencieux.
+multi-pays, multi-devises, transferts transfrontaliers et paiements de masse sont des cas
+normaux du produit, pas des exceptions — voir [Modélisation multi-pays](#modélisation-multi-pays-et-passerelle-de-paiement).
 
 ## Endpoint
 
@@ -23,12 +18,14 @@ retirés (règles, dataset synthétique, schéma) plutôt que laissés comme ang
   "receiver_phone": "+2250700000099",
   "amount": 15000,
   "transaction_type": "transfer",
-  "channel": "mobile_app"
+  "channel": "mobile_app",
+  "batch_id": null
 }
 ```
 
-`transaction_type` : `deposit` | `withdrawal` | `transfer`. `channel` : `mobile_app` | `agent`.
-`currency` est optionnel et déduit du pays de l'émetteur si absent.
+`batch_id` est optionnel : à renseigner quand la transaction fait partie d'une opération de
+paiement de masse (Clapay B2B) contenant plusieurs bénéficiaires. `currency` est optionnel et
+déduite du pays de l'émetteur si absente.
 
 Champs optionnels supplémentaires : `agent_id` (dépôt/retrait traité par un agent physique),
 `balance_before_sender`/`balance_after_sender` (solde du portefeuille, si le système appelant
@@ -36,18 +33,18 @@ les transmet).
 
 Réponse : `rule_score`, `ml_score`, `final_score` (0-100), `risk_level`, `decision`
 (`ALLOW`/`MONITOR`/`REVIEW`/`TEMPORARY_BLOCK`), `confidence`, `reasons` (règles + facteurs
-SHAP en langage naturel), `sender_country`, `receiver_country`, `is_cross_border`.
+SHAP en langage naturel), `sender_country`, `receiver_country`, `is_cross_border`, `batch_id`.
 
 `GET /api/v1/transactions/{transaction_id}` relit une analyse déjà calculée.
 
 ## Modèle de données
 
 - **Customer** : titulaire de portefeuille suivi (émetteur), créé à la volée au premier
-  contact si inconnu. Inclut `operator`, `country` et `customer_type` (`individual` /
-  `merchant` / `agent`, utilisé pour moduler la sensibilité de certaines règles).
+  contact si inconnu. Inclut `operator` et `country`, déduits du numéro
+  (`shared/utils/phone.py`).
 - **Transaction** : téléphones, montant, devise, type, canal, timestamp, ville, `device_id`,
-  `agent_id`, `balance_before_sender`/`balance_after_sender` (tous deux optionnels — Novaris
-  ne gère pas les soldes, il les reçoit s'ils existent).
+  `batch_id`, `agent_id`, `balance_before_sender`/`balance_after_sender` (tous deux optionnels
+  — Novaris ne gère pas les soldes, il les reçoit s'ils existent).
 - **TransactionAnalysis** : résultat 1:1 de l'analyse (scores, décision, raisons, version du
   modèle) — sert de piste d'audit.
 
@@ -91,28 +88,47 @@ code**, pas un flux de taux de change temps réel — une intégration réelle u
 service de taux à jour (même principe mock-aujourd'hui/API-demain que les autres connecteurs
 du produit).
 
-### 2. Compte mule récidiviste : la répétition + la source, pas juste le pass-through
+### 2. Paiement de masse (batch) : un lot déclaré n'est pas un fan-out frauduleux
 
-Un cycle isolé "dépôt/réception puis retrait rapide" est un usage parfaitement normal (cash
-reçu puis renvoyé à un proche dans l'heure). Ce qui distingue un compte mule, c'est la
-**répétition dans le temps** combinée à une **source de financement qui se répète** — le même
-complice (ou le même agent) qui alimente le compte encore et encore, plutôt que la diversité
-de clients d'un commerce légitime.
+Clapay B2B propose un vrai produit de paiement de masse (payer plusieurs fournisseurs/
+salariés en une opération). Sans en tenir compte, la règle `FANOUT_PATTERN` (≥4
+bénéficiaires distincts en 1h) générerait des faux positifs massifs sur cet usage légitime.
+Solution : un `batch_id` optionnel sur la transaction. Les entrées d'historique qui
+partagent le même `batch_id` que la transaction courante sont **exclues** des agrégats de
+vélocité/fan-out (`tx_count_last_1h`, `sum_amount_last_1h`, `distinct_receivers_last_1h`) —
+un envoi groupé à 10 bénéficiaires reste une opération unique, pas 10 signaux de risque.
+Vérifié en direct : 6 transferts à 6 bénéficiaires distincts en 5 minutes **sans** batch_id
+déclenchent `FANOUT_PATTERN` + `HIGH_VELOCITY` (REVIEW, score ~77) ; le même schéma **avec**
+un batch_id partagé reste `ALLOW` (score ~1).
 
-`feature_engineering.compute_passthrough_cycles` reconstitue, sur 30 jours glissants, les
-jambes entrantes (dépôt en agence ou transfert reçu) et sortantes (retrait ou transfert
-envoyé) de CE compte, et cherche des paires entrée→sortie de montant équivalent en moins d'une
-heure (mêmes constantes que le transit transfrontalier ci-dessous : `PASSTHROUGH_WINDOW_MINUTES`,
-`PASSTHROUGH_AMOUNT_RATIO_RANGE`). La règle `MULE_PASSTHROUGH_PATTERN` se déclenche à partir de
-3 cycles, sauf si la source de financement n'est identifiable pour aucun cycle (seuil relevé à
-5, cf. `PASSTHROUGH_MIN_CYCLES_UNVERIFIED_SOURCE`) ou si `customer_type == "merchant"` (seuil
-relevé à 6, pour absorber le commerce informel qui encaisse aussi en rafale mais depuis une
-clientèle variée).
+**`fanout_mule` (scénario) vs `batch_mule_fanout` (scénario) — pas redondants, vérifié par
+inspection des features.** Les deux montrent en surface un envoi vers 5-9 bénéficiaires
+distincts, mais ils exercent deux chemins de détection différents et produisent des vecteurs
+de features quasi orthogonaux :
 
-Vérifié en direct (`scripts/seed_admin_dashboard.py`) : 5 cycles dépôt-agence → retrait rapide,
-tous financés par le même agent, sur 4 semaines — la règle reste silencieuse sur les deux
-premiers cycles (sous le seuil de répétition) puis se déclenche à partir du 3ᵉ, avec
-`1 source identifiée sur 5 cycles traçables` dans la description générée.
+| | `fanout_mule` (pas de batch_id) | `batch_mule_fanout` (batch_id renseigné) |
+|---|---|---|
+| `distinct_receivers_last_1h` moyen | 2.83 | 0.05 (exclu du compteur, cf. ci-dessus) |
+| `is_batch_operation` | 0 | 1 |
+| `batch_unknown_receiver_ratio` | 0 (non applicable) | 1.0 (100% de bénéficiaires jamais vus) |
+| Règle qui se déclenche | `FANOUT_PATTERN` | `SUSPICIOUS_BATCH` |
+
+Le premier teste la détection de fan-out "brute" (comptage de vélocité) ; le second teste
+si le modèle sait repérer un lot déclaré **détourné** (masqué derrière un batch_id, mais
+visant des inconnus) — exactement le risque identifié en amont : un batch n'est pas
+automatiquement légitime.
+
+**`batch_id` chez les transactions légitimes n'est pas du bruit, mais une correction a été
+nécessaire.** ~11 500 lignes légitimes portent un `batch_id` (paiement de masse Clapay B2B,
+`generate_batch_payment_transactions`) en plus des ~320 lignes `batch_mule_fanout`. Une revue
+a montré qu'une première version tirait un bénéficiaire **aléatoire à chaque fois**, y
+compris pour les lots légitimes — rendant `batch_unknown_receiver_ratio` égal à 1.0 dans les
+deux cas (légitime et frauduleux), donc **inutile pour les distinguer**. Corrigé : chaque
+client B2B a maintenant un pool stable de bénéficiaires habituels (employés/fournisseurs),
+réutilisé d'un lot à l'autre avec un faible taux de renouvellement (15 % de chance d'un
+nouveau membre par lot). Résultat vérifié : `batch_unknown_receiver_ratio` moyen = 0.56
+(beaucoup de lots à 0 une fois le pool "connu") pour les lots légitimes, contre 1.0 constant
+pour les lots frauduleux — signal maintenant réellement discriminant.
 
 ### 3. Transit transfrontalier (layering via un pays tiers)
 
@@ -148,23 +164,40 @@ identifié plusieurs écarts avec la réalité du secteur, corrigés comme suit 
 
 | Écart identifié | Correction |
 |---|---|
-| Distribution uniforme des types de transaction | Le Mobile Money est avant tout une infrastructure cash-in/cash-out : distribution repondérée (deposit ~40%, withdrawal ~37%, transfer ~23%) |
-| Volume d'agence irréaliste (plafonné à quelques transactions/heure) | Densité d'agents réduite + agent préféré par client (85% du temps) + heures d'affluence partagées (`AGENT_PEAK_HOURS`) — un agent occupé atteint désormais 15-30 opérations/heure en pointe, contre un plafond artificiel de 7 avant correction |
+| Distribution uniforme des 6 types de transaction (~16,7% chacun) | Le Mobile Money est avant tout une infrastructure cash-in/cash-out : distribution repondérée (deposit ~29%, withdrawal ~26%, transfer ~18%, merchant_payment ~12%, bill_payment ~9%, airtime ~6%) |
+| Fraude enfermée dans le seul type `transfer` | La fraude s'étend maintenant à `withdrawal` (via `agent_collusion_cashout`) — le retrait chez un agent complice est un point d'exfiltration documenté par le GSMA |
 | Aucune donnée de solde | `balance_before_sender`/`balance_after_sender` simulés (ledger cohérent rejoué chronologiquement par client) ; un solde qui tombe à (quasi) zéro est l'un des signaux les plus prédictifs selon PaySim/MoMTSim |
-| Scénarios de fraude = uniquement des motifs AML/blanchiment, absents des schémas dominants GSMA (usurpation, ingénierie sociale, SIM swap, fraude interne) | 3 nouveaux scénarios : `sim_swap_takeover`, `social_engineering`, `mule_passthrough` (compte mule récidiviste, cycles répétés dépôt/réception → retrait rapide) |
+| Scénarios de fraude = uniquement des motifs AML/blanchiment, absents des schémas dominants GSMA (usurpation, ingénierie sociale, SIM swap, fraude interne/agent) | 4 nouveaux scénarios : `sim_swap_takeover`, `social_engineering`, `agent_collusion_cashout`/`agent_fake_deposit`, `merchant_layering` |
+| Rôle de l'agent absent (pas d'`agent_id`) | Pool de ~150 agents (`data/agents.csv`), lié aux dépôts/retraits ; permet de détecter un agent qui traite un volume anormal pour de nombreux clients différents |
 | `device_id` présent mais inexploité | Suivi de l'appareil habituel par client ; un changement brutal alimente `SIM_SWAP_SIGNAL` |
+| Fraude concentrée sur `transfer` uniquement (0% sur les 5 autres types) | Fraude désormais labellisée aussi sur `deposit` (`agent_fake_deposit`), `withdrawal` (`agent_collusion_cashout`) et `merchant_payment` (variante de `amount_spike`) — voir angle mort restant ci-dessous |
 
-**Périmètre volontairement réduit** (décision produit, pas un oubli) : paiement marchand,
-paiement de masse B2B et complicité d'agent au niveau agrégat (« cash-out mill ») ont été
-retirés du dataset et du moteur de règles — les deux premiers car hors du périmètre wallet
-app + agence de Novaris, le troisième car son seuil de déclenchement s'est avéré irréaliste
-(calibré sur un volume d'agence artificiellement bas) et sa conception a été jugée trop
-complexe à corriger correctement dans l'immédiat ; à reprendre plus tard avec un signal
-relatif (déviation par rapport à la baseline propre de l'agent) plutôt qu'un seuil absolu.
+Un point soulevé pendant cette revue mérite d'être noté explicitement : **un paiement de
+masse (batch) peut lui-même être détourné** — un compte compromis peut disperser des fonds
+vers des comptes mules sous couvert d'une opération "groupée" déclarée. Le module ne fait donc
+pas confiance à un `batch_id` par défaut : voir `SUSPICIOUS_BATCH` ci-dessous.
+
+### Couverture de la fraude par type de transaction (angle mort documenté)
+
+| Type | Part du volume | Fraude labellisée |
+|---|---|---|
+| `transfer` | ~18% | ~1365 cas (scénarios historiques + `merchant_layering` en sortie) |
+| `withdrawal` | ~26% | 38 cas (`agent_collusion_cashout`) |
+| `deposit` | ~29% | 32 cas (`agent_fake_deposit`, symétrique du cash-out) |
+| `merchant_payment` | ~12% | 16 cas (variante de `amount_spike`) |
+| `bill_payment`, `airtime_purchase` | ~15% combiné | **0 — angle mort assumé** |
+
+`transaction_type_transfer` reste la variable SHAP la plus influente malgré ces ajouts : la
+majorité de la fraude injectée reste sur `transfer`, ce qui reflète en partie la réalité
+(le P2P est le vecteur dominant documenté par le GSMA) mais reste aussi un artefact du volume
+de scénarios historiques sur ce type. `bill_payment`/`airtime_purchase` n'ont volontairement
+pas été couverts (volume plus faible, pas de schéma majeur spécifique documenté par le GSMA
+pour ces deux types) — si un cas d'usage réel l'exige, ce sera à ajouter en suivant le même
+principe (scénario dédié + vérification empirique de la séparabilité, comme documenté ici).
 
 ## Moteur hybride
 
-1. **Règles** (`rules.py`) : 13 règles déterministes et auditables. Chaque règle a un poids
+1. **Règles** (`rules.py`) : 14 règles déterministes et auditables. Chaque règle a un poids
    fixe et une description humaine, montants exprimés dans la devise d'origine de la
    transaction pour rester lisibles par l'analyste.
 2. **ML** (`ml.py`) : XGBoost entraîné sur données synthétiques (`scripts/train_model.py`),
@@ -178,15 +211,16 @@ relatif (déviation par rapport à la baseline propre de l'agent) plutôt qu'un 
 | `AMOUNT_SPIKE` | 35 | Montant ≥5x la moyenne habituelle du client |
 | `STRUCTURING_SUSPECTED` | 35 | Fractionnement sous le seuil de déclaration |
 | `CROSS_BORDER_PASSTHROUGH` | 40 | Réception puis renvoi rapide vers un autre pays (layering) |
-| `MULE_PASSTHROUGH_PATTERN` | 35 | Cycles répétés dépôt/réception → retrait rapide, source de financement concentrée (compte mule récidiviste) |
+| `SUSPICIOUS_BATCH` | 35 | Paiement de masse déclaré mais majoritairement vers des inconnus |
 | `SIM_SWAP_SIGNAL` | 35 | Nouvel appareil sur un compte établi + signal de risque |
 | `HIGH_VELOCITY` | 30 | ≥3 transactions en 10 min |
 | `NEW_ACCOUNT_HIGH_VALUE` | 30 | Compte <7 jours + montant élevé |
 | `SOCIAL_ENGINEERING_SIGNAL` | 30 | Virement isolé (sans rafale) très supérieur à l'habitude, vers un inconnu, en self-service |
+| `AGENT_COLLUSION_CASHOUT` | 30 | Agent traitant un volume anormal de dépôts OU retraits pour de nombreux clients différents |
 | `ACCOUNT_DRAINED` | 30 | Solde qui tombe à (quasi) zéro après la transaction |
+| `MERCHANT_LAYERING_SIGNAL` | 35 | Paiement marchand reçu puis évacué quasi immédiatement (blanchiment via faux marchand) |
 | `UNKNOWN_RECEIVER_HIGH_AMOUNT` | 25 | Bénéficiaire jamais utilisé + montant élevé |
-| `FANOUT_PATTERN` | 20 | ≥4 bénéficiaires distincts en 1h |
-| `TRANSACTION_BEHAVIOUR_ANOMALY` | 20 | Confirmation trop rapide ou nombre inhabituel de modifications du montant (signal transmis par le canal appelant, ex. Amani Wallet) |
+| `FANOUT_PATTERN` | 20 | ≥4 bénéficiaires distincts en 1h hors paiement de masse déclaré |
 | `NIGHT_ACTIVITY` | 15 | Transaction nocturne (0h-4h) + montant significatif |
 
 Pourquoi ML + règles et pas seulement l'un ou l'autre : les règles restent explicables et
@@ -200,17 +234,19 @@ explicabilité obligatoire → XGBoost + SHAP, pas de DL).
 | Variable | Rationale |
 |---|---|
 | `amount_xof_equivalent`, `sender_avg_amount_30d`, `amount_to_avg_ratio`, `has_history` | Montant normalisé multi-devises, jugé relativement à l'historique propre du client |
-| `tx_count_last_10min`, `tx_count_last_1h`, `sum_amount_last_1h`, `distinct_receivers_last_1h` | Vélocité : rafales, fractionnement, fan-out |
+| `tx_count_last_10min`, `tx_count_last_1h`, `sum_amount_last_1h`, `distinct_receivers_last_1h` | Vélocité : rafales, fractionnement, fan-out — hors transactions du même batch déclaré |
 | `hour`, `day_of_week` | Activité à des horaires atypiques |
 | `day_of_month`, `is_payday_window` | Saisonnalité mensuelle (période de paie) |
 | `is_known_receiver` | Signal classique : transfert vers un bénéficiaire jamais contacté |
 | `account_age_days` | Prise de contrôle de compte neuf |
+| `is_batch_operation`, `batch_size_so_far`, `batch_unknown_receiver_ratio` | Paiement de masse : taille du lot et part de bénéficiaires inconnus (détecte un batch détourné) |
 | `is_cross_border` | Transfert international (normal en soi, contextualise les autres signaux) |
 | `minutes_since_last_incoming`, `incoming_amount_ratio`, `is_cross_border_passthrough` | Détection de transit/layering transfrontalier |
 | `is_new_device` | Changement d'appareil brutal (SIM swap / prise de contrôle) |
 | `is_balance_drained` | Solde qui tombe à (quasi) zéro après la transaction (si le solde est transmis) |
-| `passthrough_cycle_count_30d`, `passthrough_identified_cycle_count_30d`, `passthrough_distinct_sources_30d` | Cycles dépôt/réception → retrait rapide sur 30 jours et concentration de la source de financement (compte mule récidiviste) |
-| `kyc_level`, `customer_type`, `transaction_type`, `channel` (one-hot) | Niveau de vérification client, type de client, nature et canal de la transaction |
+| `is_merchant_layering` | Paiement marchand reçu puis évacué quasi immédiatement (blanchiment via faux marchand) |
+| `agent_tx_count_last_1h`, `agent_distinct_senders_last_1h` | Volume/diversité de clients traités par l'agent (dépôt ou retrait, complicité agent) |
+| `kyc_level`, `transaction_type`, `channel` (one-hot) | Niveau de vérification client, nature et canal de la transaction |
 
 Volontairement **exclus** du modèle : les numéros bruts (sender_phone/receiver_phone —
 apprendre "ce numéro précis = fraude" ne généralise pas, relève du futur module Fraud
@@ -224,16 +260,17 @@ python scripts/generate_synthetic_data.py   # data/customers.csv, data/transacti
 python scripts/train_model.py               # ml_models/transaction_risk_model.joblib
 ```
 
-~1500 clients répartis sur 18 pays, ~25 agents (densité calibrée pour produire des pics
-horaires réalistes de 15-30+ opérations/agent, cf. section précédente), ~530k transactions sur
-**12 mois**, 10 scénarios de fraude par client : `amount_spike`, `velocity_burst`,
-`structuring`, `night_fraud`, `new_account_takeover`, `fanout_mule`,
-`cross_border_passthrough`, `sim_swap_takeover`, `social_engineering`, `mule_passthrough`
-(compte mule récidiviste, 4-7 cycles répétés sur plusieurs semaines). Résultats sur le jeu de
-test (20%) : AUC-ROC ≈ 0.9997, AUC-PR ≈ 0.97, recall ≈ 0.99, precision ≈ 0.44 (seuil 0.5) — la
-precision plus basse qu'une version antérieure du modèle reflète surtout le volume de fraude
-labellisée nettement réduit après le recentrage du périmètre (dataset multi-pays généraliste →
-wallet + agence uniquement), pas une régression de qualité du signal.
+~1500 clients répartis sur 18 pays, ~150 agents, ~520k transactions sur **12 mois**, 11
+scénarios de fraude par client (amount_spike — désormais transfer ou merchant_payment —,
+velocity_burst, structuring, night_fraud, new_account_takeover, fanout_mule,
+cross_border_passthrough, sim_swap_takeover, social_engineering, batch_mule_fanout,
+**merchant_layering**) + un scénario indépendant centré sur l'agent, en deux variantes
+(**agent_collusion_cashout** côté retrait, **agent_fake_deposit** côté dépôt), plus des
+opérations de paiement de masse légitimes (~1400 lots, bénéficiaires réutilisés d'un lot à
+l'autre) pour entraîner l'exclusion batch de `FANOUT_PATTERN`. Résultats sur le jeu de test
+(20%) : AUC-ROC ≈ 0.9997, AUC-PR ≈ 0.98, recall ≈ 0.98, precision ≈ 0.63 (seuil 0.5) — la
+precision a progressé par étapes (0.28 → 0.59 → 0.63) à mesure que la fraude a été diversifiée
+sur davantage de types et de signaux (device, solde, agent), la rendant plus séparable.
 
 **Limite connue** : les scénarios synthétiques restent assez séparables individuellement
 (d'où l'AUC très élevé) ; avec des données réelles, prévoir un recalibrage des seuils et un

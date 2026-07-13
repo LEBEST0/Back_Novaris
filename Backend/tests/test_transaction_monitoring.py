@@ -35,23 +35,21 @@ def _features(**overrides) -> ContextFeatures:
         tx_count_last_1h=0,
         sum_amount_last_1h=0,
         distinct_receivers_last_1h=0,
+        is_batch_operation=False,
+        batch_size_so_far=0,
+        batch_unknown_receiver_ratio=0.0,
         is_cross_border=False,
         minutes_since_last_incoming=999_999.0,
         incoming_amount_ratio=0.0,
         is_cross_border_passthrough=False,
         is_new_device=False,
         is_balance_drained=False,
-        passthrough_cycle_count_30d=0,
-        passthrough_identified_cycle_count_30d=0,
-        passthrough_distinct_sources_30d=0,
+        is_merchant_layering=False,
+        agent_tx_count_last_1h=0,
+        agent_distinct_senders_last_1h=0,
         kyc_level="standard",
-        customer_type="individual",
         transaction_type="transfer",
         channel="mobile_app",
-        behaviour_time_to_complete_ms=None,
-        behaviour_amount_field_edits=None,
-        behaviour_very_fast=False,
-        behaviour_excessive_edits=False,
     )
     base.update(overrides)
     return ContextFeatures(**base)
@@ -90,16 +88,17 @@ def test_structuring_rule_triggers_under_ceiling_with_velocity():
     assert "STRUCTURING_SUSPECTED" in triggered_codes
 
 
-def test_fanout_triggers_on_many_distinct_receivers():
-    features = _features(distinct_receivers_last_1h=5)
-    results = evaluate_rules(features)
-    assert any(r.code == "FANOUT_PATTERN" and r.triggered for r in results)
-
-
-def test_fanout_does_not_trigger_below_threshold():
-    features = _features(distinct_receivers_last_1h=2)
+def test_fanout_ignores_transactions_from_the_same_batch():
+    # 5 bénéficiaires distincts en 1h mais tous dans le même lot déclaré -> pas de fanout
+    features = _features(distinct_receivers_last_1h=0, is_batch_operation=True)
     results = evaluate_rules(features)
     assert not any(r.code == "FANOUT_PATTERN" and r.triggered for r in results)
+
+
+def test_fanout_triggers_outside_a_batch():
+    features = _features(distinct_receivers_last_1h=5, is_batch_operation=False)
+    results = evaluate_rules(features)
+    assert any(r.code == "FANOUT_PATTERN" and r.triggered for r in results)
 
 
 def test_cross_border_passthrough_rule_triggers():
@@ -119,6 +118,19 @@ def test_amount_thresholds_are_currency_normalized():
     )
     results = evaluate_rules(features)
     assert not any(r.code == "UNKNOWN_RECEIVER_HIGH_AMOUNT" and r.triggered for r in results)
+
+
+def test_suspicious_batch_triggers_on_mostly_unknown_receivers():
+    features = _features(is_batch_operation=True, batch_size_so_far=5, batch_unknown_receiver_ratio=0.9)
+    results = evaluate_rules(features)
+    assert any(r.code == "SUSPICIOUS_BATCH" and r.triggered for r in results)
+
+
+def test_suspicious_batch_does_not_trigger_on_legitimate_payroll():
+    # Un vrai virement de paie répète généralement les mêmes employés/fournisseurs.
+    features = _features(is_batch_operation=True, batch_size_so_far=8, batch_unknown_receiver_ratio=0.1)
+    results = evaluate_rules(features)
+    assert not any(r.code == "SUSPICIOUS_BATCH" and r.triggered for r in results)
 
 
 def test_sim_swap_signal_triggers_on_new_device_and_unknown_receiver():
@@ -166,48 +178,43 @@ def test_social_engineering_signal_does_not_trigger_during_a_burst():
     assert not any(r.code == "SOCIAL_ENGINEERING_SIGNAL" and r.triggered for r in results)
 
 
-def test_mule_passthrough_does_not_trigger_below_min_cycles():
-    # 2 cycles seulement (source unique) : sous le seuil de répétition, usage normal possible.
+def test_agent_collusion_cashout_triggers_on_high_volume_diverse_senders():
     features = _features(
-        passthrough_cycle_count_30d=2,
-        passthrough_identified_cycle_count_30d=2,
-        passthrough_distinct_sources_30d=1,
+        transaction_type="withdrawal",
+        agent_tx_count_last_1h=8,
+        agent_distinct_senders_last_1h=7,
     )
     results = evaluate_rules(features)
-    assert not any(r.code == "MULE_PASSTHROUGH_PATTERN" and r.triggered for r in results)
+    assert any(r.code == "AGENT_COLLUSION_CASHOUT" and r.triggered for r in results)
 
 
-def test_mule_passthrough_triggers_on_repeated_cycles_with_concentrated_source():
+def test_agent_collusion_cashout_triggers_on_fake_deposits_too():
+    # Symétrique au cash-out : un agent qui credite (fausse dépôt) beaucoup de clients
+    # différents en peu de temps est le même schéma de complicité côté dépôt.
     features = _features(
-        passthrough_cycle_count_30d=4,
-        passthrough_identified_cycle_count_30d=4,
-        passthrough_distinct_sources_30d=1,
+        transaction_type="deposit",
+        agent_tx_count_last_1h=8,
+        agent_distinct_senders_last_1h=7,
     )
     results = evaluate_rules(features)
-    assert any(r.code == "MULE_PASSTHROUGH_PATTERN" and r.triggered for r in results)
+    assert any(r.code == "AGENT_COLLUSION_CASHOUT" and r.triggered for r in results)
 
 
-def test_mule_passthrough_does_not_trigger_with_diverse_sources():
-    # Beaucoup de cycles, mais des sources différentes à chaque fois -> profil commerce, pas mule.
+def test_agent_collusion_cashout_does_not_trigger_on_merchant_payment():
+    # La règle ne doit s'appliquer qu'aux flux agent-médiés (dépôt/retrait).
     features = _features(
-        passthrough_cycle_count_30d=5,
-        passthrough_identified_cycle_count_30d=5,
-        passthrough_distinct_sources_30d=5,
+        transaction_type="merchant_payment",
+        agent_tx_count_last_1h=8,
+        agent_distinct_senders_last_1h=7,
     )
     results = evaluate_rules(features)
-    assert not any(r.code == "MULE_PASSTHROUGH_PATTERN" and r.triggered for r in results)
+    assert not any(r.code == "AGENT_COLLUSION_CASHOUT" and r.triggered for r in results)
 
 
-def test_mule_passthrough_merchant_needs_more_cycles():
-    # Un commerçant déclaré a un seuil relevé (6) : 4 cycles concentrés ne suffisent pas.
-    features = _features(
-        customer_type="merchant",
-        passthrough_cycle_count_30d=4,
-        passthrough_identified_cycle_count_30d=4,
-        passthrough_distinct_sources_30d=1,
-    )
+def test_merchant_layering_signal_triggers():
+    features = _features(transaction_type="transfer", is_merchant_layering=True)
     results = evaluate_rules(features)
-    assert not any(r.code == "MULE_PASSTHROUGH_PATTERN" and r.triggered for r in results)
+    assert any(r.code == "MERCHANT_LAYERING_SIGNAL" and r.triggered for r in results)
 
 
 def test_account_drained_triggers_on_near_zero_balance():
@@ -252,7 +259,7 @@ def test_analyze_suspicious_transaction_is_flagged():
         "receiver_phone": _unique_ci_phone(),
         "amount": 950000,
         "transaction_type": "transfer",
-        "channel": "mobile_app",
+        "channel": "web",
         "timestamp": datetime.now(timezone.utc).replace(hour=2, minute=30).isoformat(),
     }
     response = client.post("/api/v1/transactions/analyze", json=payload)
@@ -264,40 +271,29 @@ def test_analyze_suspicious_transaction_is_flagged():
     assert len(body["reasons"]) > 0
 
 
-def test_mule_passthrough_detected_via_api():
-    # 3 cycles dépôt (même agent) -> retrait rapide, quelques jours d'écart : la règle ne
-    # doit se déclencher qu'à partir du 3e cycle, pas avant.
+def test_batch_payment_does_not_trigger_fanout_via_api():
+    # Un même batch_id envoyé à 5 bénéficiaires distincts en quelques minutes = paiement
+    # de masse légitime (Clapay B2B) : ne doit jamais déclencher FANOUT_PATTERN.
     sender = _unique_ci_phone()
-    agent_id = f"AGT-TEST-{random.randint(1000, 9999)}"
+    batch_id = f"BATCH-TEST-{random.randint(100000, 999999)}"
     last_body = None
-    for day in (1, 8, 15):
-        deposit_payload = {
+    for i in range(1, 6):
+        payload = {
             "sender_phone": sender,
-            "receiver_phone": sender,
-            "amount": 100000,
-            "transaction_type": "deposit",
-            "channel": "agent",
-            "agent_id": agent_id,
-            "timestamp": f"2026-05-{day:02d}T09:00:00",
+            "receiver_phone": _unique_ci_phone(),
+            "amount": 80000,
+            "transaction_type": "transfer",
+            "channel": "api",
+            "batch_id": batch_id,
+            "timestamp": f"2026-05-10T09:0{i}:00",
         }
-        response = client.post("/api/v1/transactions/analyze", json=deposit_payload)
-        assert response.status_code == 200
-
-        withdrawal_payload = {
-            "sender_phone": sender,
-            "receiver_phone": sender,
-            "amount": 95000,
-            "transaction_type": "withdrawal",
-            "channel": "agent",
-            "agent_id": agent_id,
-            "timestamp": f"2026-05-{day:02d}T09:20:00",
-        }
-        response = client.post("/api/v1/transactions/analyze", json=withdrawal_payload)
+        response = client.post("/api/v1/transactions/analyze", json=payload)
         assert response.status_code == 200
         last_body = response.json()
 
     flag_codes = {f["code"] for f in last_body["rule_flags"]}
-    assert "MULE_PASSTHROUGH_PATTERN" in flag_codes
+    assert "FANOUT_PATTERN" not in flag_codes
+    assert last_body["batch_id"] == batch_id
 
 
 def test_cross_border_passthrough_detected_via_api():
@@ -336,8 +332,8 @@ def test_get_transaction_after_analysis():
         "sender_phone": _unique_ci_phone(),
         "receiver_phone": _unique_ci_phone(),
         "amount": 5000,
-        "transaction_type": "transfer",
-        "channel": "mobile_app",
+        "transaction_type": "airtime_purchase",
+        "channel": "ussd",
     }
     created = client.post("/api/v1/transactions/analyze", json=payload).json()
     fetched = client.get(f"/api/v1/transactions/{created['transaction_id']}")

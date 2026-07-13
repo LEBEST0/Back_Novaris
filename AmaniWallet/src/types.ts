@@ -123,19 +123,6 @@ export interface TransferConfirmResult {
   message: string;
 }
 
-export interface Agent {
-  agent_id: string;
-  name: string;
-  city: string;
-}
-
-export interface CashOperationResult {
-  wallet_transaction_id: string;
-  status: "COMPLETED" | "PENDING" | "BLOCKED";
-  message: string;
-  new_balance: number;
-}
-
 export interface HistoryEntry {
   id: string;
   created_at: string;
