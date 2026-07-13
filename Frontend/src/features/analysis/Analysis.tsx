@@ -3,6 +3,7 @@ import { Play, ShieldAlert, X } from "lucide-react";
 import { PresetSelector, type PresetKey } from "../../components/PresetSelector";
 import { ScoreGauge } from "../../components/ScoreGauge";
 import { EngineBreakdown } from "../../components/EngineBreakdown";
+import { MlFactorLabel } from "../../components/MlFactorLabel";
 import { RiskBadge } from "../../components/RiskBadge";
 import { CHANNELS, CHANNEL_LABELS, TRANSACTION_TYPES, TRANSACTION_TYPE_LABELS } from "../../constants";
 import { analyzeTransaction, searchCustomers } from "../../services/api";
@@ -408,7 +409,7 @@ export function Analysis({ current, submitting, error, onAnalyze, onAnalysisComp
               </div>
               <EngineBreakdown ruleScore={current.rule_score} mlScore={current.ml_score} confidence={current.confidence} />
               <ul className="reason-list">
-                {current.reasons.slice(0, 5).map((reason) => <li key={reason}>{reason}</li>)}
+                {current.reasons.slice(0, 5).map((reason) => <li key={reason}><MlFactorLabel factor={reason} /></li>)}
               </ul>
               <p className="summary mono">
                 {current.transaction_id} · {formatCurrency(current.amount, current.currency)}

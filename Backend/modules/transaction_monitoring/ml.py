@@ -138,14 +138,18 @@ class ModelBundle:
 
 
 def _describe_factor(column: str, shap_value: float) -> str:
-    sign = "+" if shap_value > 0 else "-"
+    # Formulation explicite plutôt qu'un "impact +/-" énigmatique : chaque facteur SHAP
+    # dit dans quel sens IL a fait bouger le score de CETTE transaction précise (pas si sa
+    # valeur brute est "bonne" ou "mauvaise" en soi) — cf. retour utilisateur, ce point
+    # n'était pas compris tel quel.
+    direction = "fait monter le risque" if shap_value > 0 else "fait baisser le risque"
     for base, label in CATEGORICAL_BASE_LABELS.items():
         prefix = base + "_"
         if column.startswith(prefix):
             value = column[len(prefix):]
-            return f"{label} : {value} (impact {sign})"
+            return f"{label} : {value} ({direction})"
     label = HUMAN_LABELS.get(column, column)
-    return f"{label} (impact {sign})"
+    return f"{label} ({direction})"
 
 
 @lru_cache(maxsize=1)
